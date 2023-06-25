@@ -59,10 +59,10 @@ CPU_USED_15M=$(cat /proc/loadavg | awk '{print $3}')
 UPTIME=$(uptime|sed 's/.*\([0-9]\+ days\), \([0-9]\+\):\([0-9]\+\).*/\1, \2 hours, \3 minutes/')
 
 ## Skynet, How to! https://azagramac.gitbook.io/myblog/asus-router/instalar-skynet
-SKYNET_VERSION=$(cat /tmp/mnt/sda1/skynet/skynet.cfg | grep localver | awk -F "=" '{print $2}' | tr -d '"')
-IPS_BANNED=$(cat /tmp/mnt/sda1/skynet/events.log | tail -1 | awk '{print $6}')
-IN_BLOCK=$(cat /tmp/mnt/sda1/skynet/events.log | tail -1 | awk '{print $15}')
-OUT_BLOCK=$(cat /tmp/mnt/sda1/skynet/events.log | tail -1 | awk '{print $18}')
+#SKYNET_VERSION=$(cat /tmp/mnt/sda1/skynet/skynet.cfg | grep localver | awk -F "=" '{print $2}' | tr -d '"')
+#IPS_BANNED=$(cat /tmp/mnt/sda1/skynet/events.log | tail -1 | awk '{print $6}')
+#IN_BLOCK=$(cat /tmp/mnt/sda1/skynet/events.log | tail -1 | awk '{print $15}')
+#OUT_BLOCK=$(cat /tmp/mnt/sda1/skynet/events.log | tail -1 | awk '{print $18}')
 
 ## Sign Trend
 SIGN_DATE=$(nvram get bwdpi_sig_ver)
@@ -90,16 +90,11 @@ function sendMessage()
         - Load CPU: $CPU_USED_1M / $CPU_USED_5M / $CPU_USED_15M\n \
         - RAM Used: $RAM_USED_PERCENTAGE%% / Free: $RAM_FREE_PERCENTAGE%%\n \
         - Swap Used: $SWAP_USED%%\n\n \
-        🧱 <b>Skynet</b>\n \
-        - Skynet: $SKYNET_VERSION\n \
-        - IPs Banned: $IPS_BANNED\n \
-        - Inbound Blocks: $IN_BLOCK\n \
-        - Outbound Blocks: $OUT_BLOCK\n\n \
         📃 <b>Info</b>\n \
         - Model: $MODEL_NAME\n \
         - Firmware: $FIRMWARE_VERSION\n \
-        - SSDID 2.4Ghz: $SSID_24GHZ\n \
-        - SSDID 5Ghz: $SSID_5GHZ\n \
+        - SSID 2.4Ghz: $SSID_24GHZ\n \
+        - SSID 5Ghz: $SSID_5GHZ\n \
         - IP WAN: $IP_WAN0\n \
         - IP LAN: $IP_LAN\n \
         - Trend Micro sign: $SIGN_DATE\n")" > /dev/null 2>&1
