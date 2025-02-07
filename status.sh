@@ -38,8 +38,10 @@ unset LIFETIME_USAGE
 IP_WAN0=$(nvram get wan0_ipaddr)
 IP_LAN=$(nvram get lan_ipaddr)
 
-# Alternative command to get firmware version
-FIRMWARE_VERSION=$(nvram get buildno)
+# Fetch the firmware version from webs_state_info
+WEB_STATE_INFO=$(nvram get webs_state_info)
+FIRMWARE_VERSION=$(echo $WEB_STATE_INFO | awk -F'_' '{print $1"."$2"."$3}')
+
 MODEL_NAME=$(nvram get wps_device_name)
 
 # Try different variables for SSID values
@@ -110,8 +112,8 @@ function sendMessage()
 🌡️ WLAN 5 Temp: $TEMP_WIFI5º
 ⏱️ Uptime: $UPTIME
 💻 Load Average: $LOAD_AVG
-🧠 RAM Used: $RAM_USED_PERCENTAGE%% / Free: $RAM_FREE_PERCENTAGE%%
-💾 Swap Used: $SWAP_USED%%
+🧠 RAM Used: $RAM_USED_PERCENTAGE% / Free: $RAM_FREE_PERCENTAGE%
+💾 Swap Used: $SWAP_USED%
 
 📅 Data Usage
 Daily Data Usage: $DAILY_USAGE GB (Date: $(date +'%B %d, %Y'))
