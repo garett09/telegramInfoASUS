@@ -1,4 +1,4 @@
-#!/bin/sh
+!/bin/sh
 
 #
 # Dev: garett09
@@ -116,9 +116,9 @@ function sendMessage()
 💾 Swap Used: $SWAP_USED%
 
 📅 Data Usage
-Daily Data Usage: $DAILY_USAGE GB (Date: $(date +'%B %d, %Y'))
-Monthly Data Usage: $MONTHLY_USAGE GB (Month: $(date +'%B %Y'))
-Yearly Data Usage: $YEARLY_USAGE GiB GB (Year: $(date +'%Y'))
+Daily Data Usage: $DAILY_USAGE (Date: $(date +'%B %d, %Y'))
+Monthly Data Usage: $MONTHLY_USAGE (Month: $(date +'%B %Y'))
+Yearly Data Usage: $YEARLY_USAGE (Year: $(date +'%Y'))
 Lifetime Data Usage: $LIFETIME_USAGE (February 7, 2025)
 
 📃 Info
