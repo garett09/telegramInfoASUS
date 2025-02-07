@@ -1,49 +1,65 @@
 #!/bin/sh
 
 #
-# Dev: AzagraMac 2023
-# version: 1.1
-# Link: https://azagramac.gitbook.io/
+# Dev: garett09
+# version: 2.01
 #
 
 # Unset vars
-unset $IP_PWAN0
-unset $IP_LAN
-unset $FIRMWARE_VERSION
-unset $MODEL_NAME
-unset $SSID_5GHZ
-unset $SSID_24GHZ
-unset $TEMP_CPU
-unset $TEMP_WIFI24
-unset $TEMP_WIFI5
-unset $RAM_TOTAL
-unset $RAM_USED
-unset $RAM_FREE
-unset $RAM_USED_PERCENTAGE
-unset $RAM_FREE_PERCENTAGE
-unset $SWAP_USED
-unset $CPU_USED_1M
-unset $CPU_USED_5M
-unset $CPU_USED_15M
-unset $UPTIME
-unset $SKYNET_VERSION
-unset $IPS_BANNED
-unset $IN_BLOCK
-unset $OUT_BLOCK
-unset $SIGN_DATE
+unset IP_PWAN0
+unset IP_LAN
+unset FIRMWARE_VERSION
+unset MODEL_NAME
+unset SSID_5GHZ
+unset SSID_24GHZ
+unset TEMP_CPU
+unset TEMP_WIFI24
+unset TEMP_WIFI5
+unset RAM_TOTAL
+unset RAM_USED
+unset RAM_FREE
+unset RAM_USED_PERCENTAGE
+unset RAM_FREE_PERCENTAGE
+unset SWAP_USED
+unset CPU_USED_1M
+unset CPU_USED_5M
+unset CPU_USED_15M
+unset UPTIME
+unset SKYNET_VERSION
+unset IPS_BANNED
+unset IN_BLOCK
+unset OUT_BLOCK
+unset SIGN_DATE
+unset DAILY_USAGE
+unset MONTHLY_USAGE
+unset YEARLY_USAGE
+unset LIFETIME_USAGE
 
 IP_WAN0=$(nvram get wan0_ipaddr)
 IP_LAN=$(nvram get lan_ipaddr)
 
-FIRMWARE_VERSION=$(nvram get webs_state_info_am)
+# Alternative command to get firmware version
+FIRMWARE_VERSION=$(nvram get buildno)
 MODEL_NAME=$(nvram get wps_device_name)
 
-SSID_5GHZ=$(nvram get wl1_ssid)
-SSID_24GHZ=$(nvram get wl0_ssid)
+# Try different variables for SSID values
+SSID_5GHZ=$(nvram get wl1.1_ssid)
+SSID_24GHZ=$(nvram get wl0.1_ssid)
+
+# Fallback if the above variables don't work
+if [ -z "$SSID_5GHZ" ]; then
+    SSID_5GHZ=$(nvram get wl_ssid)
+fi
+
+if [ -z "$SSID_24GHZ" ]; then
+    SSID_24GHZ=$(nvram get wl_ssid)
+fi
 
 TEMP_CPU=$(cat /sys/class/thermal/thermal_zone0/temp | awk '{printf("%.0f\n", $1 / 1000) }')
-TEMP_WIFI24=$(wl -i eth6 phy_tempsense | awk '{print $1 / 2 + 20}')
-TEMP_WIFI5=$(wl -i eth7 phy_tempsense | awk '{print $1 / 2 + 20}')
+
+# Use wl0 and wl1 for temperature readings
+TEMP_WIFI24=$(wl -i wl0 phy_tempsense | awk '{print $1 / 2 + 20}')
+TEMP_WIFI5=$(wl -i wl1 phy_tempsense | awk '{print $1 / 2 + 20}')
 
 RAM_TOTAL=$(free | grep -i mem | awk '{print $2}')
 RAM_USED=$(free | grep -i mem | awk '{print $3}')
@@ -56,13 +72,17 @@ CPU_USED_1M=$(cat /proc/loadavg | awk '{print $1}')
 CPU_USED_5M=$(cat /proc/loadavg | awk '{print $2}')
 CPU_USED_15M=$(cat /proc/loadavg | awk '{print $3}')
 
-UPTIME=$(uptime|sed 's/.*\([0-9]\+ days\), \([0-9]\+\):\([0-9]\+\).*/\1, \2 hours, \3 minutes/')
+UPTIME=$(uptime | awk -F'( |,|:)+' '{print $6,$7",",$8,"hours,",$9,"minutes"}')
+LOAD_AVG=$(uptime | awk -F'( |,|:)+' '{printf "1 min: %.2f%% 5 mins: %.2f%% 15 mins: %.2f%%", $12*100, $13*100, $14*100}')
 
-## Skynet, How to! https://azagramac.gitbook.io/myblog/asus-router/instalar-skynet
-#SKYNET_VERSION=$(cat /tmp/mnt/sda1/skynet/skynet.cfg | grep localver | awk -F "=" '{print $2}' | tr -d '"')
-#IPS_BANNED=$(cat /tmp/mnt/sda1/skynet/events.log | tail -1 | awk '{print $6}')
-#IN_BLOCK=$(cat /tmp/mnt/sda1/skynet/events.log | tail -1 | awk '{print $15}')
-#OUT_BLOCK=$(cat /tmp/mnt/sda1/skynet/events.log | tail -1 | awk '{print $18}')
+# Get data usage from vnStat for eth0 with data directory on USB
+DAILY_USAGE=$(vnstat -i ppp0 -d --dbdir /opt/var/lib/vnstat | grep "$(date +'%Y-%m-%d')" | awk '{print $8, $9}')
+MONTHLY_USAGE=$(vnstat -i ppp0 -m --dbdir /opt/var/lib/vnstat | grep "$(date +'%Y-%m')" | awk '{print $8, $9}')
+YEARLY_USAGE=$(vnstat -i ppp0 -y --dbdir /opt/var/lib/vnstat | grep "$(date +'%Y')" | awk '{print $8, $9}')
+LIFETIME_USAGE=$(vnstat -i ppp0 --dbdir /opt/var/lib/vnstat | grep "total:" | awk '{print $8, $9}')
+
+# Get lifetime usage as of February 7th
+LIFETIME_USAGE_FEB7=$(vnstat -i ppp0 --dbdir /opt/var/lib/vnstat | grep "total:" | awk '{print $8, $9}')
 
 ## Sign Trend
 SIGN_DATE=$(nvram get bwdpi_sig_ver)
@@ -73,31 +93,46 @@ TOKEN=$(cat $TELEGRAM_AUTH | grep "TOKEN" | awk -F "=" '{print $2}')
 CHATID=$(cat $TELEGRAM_AUTH | grep "CHAT_ID" | awk -F "=" '{print $2}')
 API_TELEGRAM="https://api.telegram.org/bot$TOKEN/sendMessage?parse_mode=HTML"
 
-DATE=$(date +"%T, %d/%m/%Y")
+DATE=$(date +"%I:%M %p, %B %d, %Y")
 LIMIT_TEMP_CPU=70
-unset $BANNER
+unset BANNER
 
 function sendMessage()
 {
+    TEXT=$(cat <<EOF
+<b>$BANNER</b>
+
+🕒 Time: $DATE
+
+📊 Status
+🌡️ CPU Temp: $TEMP_CPUº
+🌡️ WLAN 2.4 Temp: $TEMP_WIFI24º
+🌡️ WLAN 5 Temp: $TEMP_WIFI5º
+⏱️ Uptime: $UPTIME
+💻 Load Average: $LOAD_AVG
+🧠 RAM Used: $RAM_USED_PERCENTAGE%% / Free: $RAM_FREE_PERCENTAGE%%
+💾 Swap Used: $SWAP_USED%%
+
+📅 Data Usage
+Daily Data Usage: $DAILY_USAGE GB (Date: $(date +'%B %d, %Y'))
+Monthly Data Usage: $MONTHLY_USAGE GB (Month: $(date +'%B %Y'))
+Yearly Data Usage: $YEARLY_USAGE GiB GB (Year: $(date +'%Y'))
+Lifetime Data Usage: $LIFETIME_USAGE (February 7, 2025)
+
+📃 Info
+📶 Model: $MODEL_NAME
+🛠️ Firmware: $FIRMWARE_VERSION
+📡 SSID 2.4Ghz: $SSID_24GHZ
+📡 SSID 5Ghz: $SSID_5GHZ
+🌐 IP WAN: $IP_WAN0
+🌐 IP LAN: $IP_LAN
+🕒 Trend Micro sign: $SIGN_DATE
+EOF
+)
+
     curl -s -X POST $API_TELEGRAM \
         -d chat_id=$CHATID \
-        -d text="$(printf "<b>$BANNER</b>\n\n \
-        📊 <b>Status</b>\n \
-        - CPU Temp: $TEMP_CPUº\n \
-        - WLAN 2.4 Temp: $TEMP_WIFI24º\n \
-        - WLAN 5 Temp: $TEMP_WIFI5º\n \
-        - Uptime: $UPTIME\n \
-        - Load CPU: $CPU_USED_1M / $CPU_USED_5M / $CPU_USED_15M\n \
-        - RAM Used: $RAM_USED_PERCENTAGE%% / Free: $RAM_FREE_PERCENTAGE%%\n \
-        - Swap Used: $SWAP_USED%%\n\n \
-        📃 <b>Info</b>\n \
-        - Model: $MODEL_NAME\n \
-        - Firmware: $FIRMWARE_VERSION\n \
-        - SSID 2.4Ghz: $SSID_24GHZ\n \
-        - SSID 5Ghz: $SSID_5GHZ\n \
-        - IP WAN: $IP_WAN0\n \
-        - IP LAN: $IP_LAN\n \
-        - Trend Micro sign: $SIGN_DATE\n")" > /dev/null 2>&1
+        -d text="$TEXT" > /dev/null 2>&1
 }
 
 if [ "$TEMP_CPU" -gt "$LIMIT_TEMP_CPU" ]
