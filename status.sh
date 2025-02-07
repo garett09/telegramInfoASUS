@@ -1,4 +1,4 @@
-!/bin/sh
+#!/bin/sh
 
 #
 # Dev: garett09
@@ -74,8 +74,18 @@ CPU_USED_1M=$(cat /proc/loadavg | awk '{print $1}')
 CPU_USED_5M=$(cat /proc/loadavg | awk '{print $2}')
 CPU_USED_15M=$(cat /proc/loadavg | awk '{print $3}')
 
-UPTIME=$(uptime | awk -F'( |,|:)+' '{print $6,$7",",$8,"hours,",$9,"minutes"}')
-LOAD_AVG=$(uptime | awk -F'( |,|:)+' '{printf "1 min: %.2f%% 5 mins: %.2f%% 15 mins: %.2f%%", $12*100, $13*100, $14*100}')
+UPTIME=$(uptime | awk -F'up ' '{print $2}' | awk -F', ' '{print $1}')
+if echo "$UPTIME" | grep -q "min"; then
+    UPTIME="Uptime: $UPTIME"
+elif echo "$UPTIME" | grep -q "hour"; then
+    UPTIME="Uptime: $UPTIME"
+elif echo "$UPTIME" | grep -q "day"; then
+    UPTIME="Uptime: $UPTIME"
+else
+    UPTIME="Uptime: Less than a minute"
+fi
+
+LOAD_AVG=$(uptime | awk -F'load average: ' '{print $2}' | awk -F', ' '{printf "1 min: %.2f%% 5 mins: %.2f%% 15 mins: %.2f%%", $1*100, $2*100, $3*100}')
 
 # Get data usage from vnStat for eth0 with data directory on USB
 DAILY_USAGE=$(vnstat -i ppp0 -d --dbdir /opt/var/lib/vnstat | grep "$(date +'%Y-%m-%d')" | awk '{print $8, $9}')
@@ -110,7 +120,7 @@ function sendMessage()
 🌡️ CPU Temp: $TEMP_CPUº
 🌡️ WLAN 2.4 Temp: $TEMP_WIFI24º
 🌡️ WLAN 5 Temp: $TEMP_WIFI5º
-⏱️ Uptime: $UPTIME
+⏱️ $UPTIME
 💻 Load Average: $LOAD_AVG
 🧠 RAM Used: $RAM_USED_PERCENTAGE% / Free: $RAM_FREE_PERCENTAGE%
 💾 Swap Used: $SWAP_USED%
