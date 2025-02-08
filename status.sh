@@ -168,8 +168,6 @@ function sendMessage()
     TEXT=$(cat <<EOF
 <b>$BANNER</b>
 
-🕒 Time: $DATE
-
 <b>📊 Status</b>
 🌡️ CPU Temp: $TEMP_CPUº
 🌡️ WLAN 2.4 Temp: $TEMP_WIFI24º
@@ -178,6 +176,7 @@ function sendMessage()
 💻 Load Average: $LOAD_AVG
 🧠 RAM Used: $RAM_USED_PERCENTAGE% / Free: $RAM_FREE_PERCENTAGE%
 💾 Swap Used: $SWAP_USED%
+🕒 Time of report: $DATE
 
 <b>📅 Data Usage</b>
 Daily Data Usage: $DAILY_USAGE_DECIMAL (Date: $(date +'%B %d, %Y'))
