@@ -113,6 +113,8 @@ else
     FORMATTED_UPTIME=$(format_uptime "$RAW_UPTIME")
 fi
 
+LOAD_AVG=$(uptime | awk -F'load average: ' '{print $2}' | awk -F', ' '{printf "1 min: %.2f%% 5 mins: %.2f%% 15 mins: %.2f%%", $1*100, $2*100, $3*100}')
+
 # Function to convert data usage from binary to decimal
 convert_usage() {
     local value=$1
