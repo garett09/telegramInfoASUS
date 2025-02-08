@@ -181,7 +181,7 @@ function sendMessage()
 Daily Data Usage: $DAILY_USAGE_DECIMAL (Date: $(date +'%B %d, %Y'))
 Monthly Data Usage: $MONTHLY_USAGE_DECIMAL (Month: $(date +'%B %Y'))
 Yearly Data Usage: $YEARLY_USAGE_DECIMAL (Year: $(date +'%Y'))
-Lifetime Data Usage: $LIFETIME_USAGE_DECIMAL (February 7, 2025)
+Lifetime Data Usage: $LIFETIME_USAGE_DECIMAL (since February 7, 2025)
 
 <b>📃 Info</b>
 📶 Model: $MODEL_NAME
