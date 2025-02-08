@@ -2,7 +2,7 @@
 
 #
 # Dev: garett09
-# version: 2.01
+# version: 2.10
 #
 
 # Unset vars
@@ -74,18 +74,57 @@ CPU_USED_1M=$(cat /proc/loadavg | awk '{print $1}')
 CPU_USED_5M=$(cat /proc/loadavg | awk '{print $2}')
 CPU_USED_15M=$(cat /proc/loadavg | awk '{print $3}')
 
-UPTIME=$(uptime | awk -F'up ' '{print $2}' | awk -F', ' '{print $1}')
-if echo "$UPTIME" | grep -q "min"; then
-    UPTIME="Uptime: $UPTIME"
-elif echo "$UPTIME" | grep -q "hour"; then
-    UPTIME="Uptime: $UPTIME"
-elif echo "$UPTIME" | grep -q "day"; then
-    UPTIME="Uptime: $UPTIME"
+# Function to format uptime
+format_uptime() {
+    local uptime=$1
+    if echo "$uptime" | grep -q "min"; then
+        echo "Uptime: $uptime minutes"
+    elif echo "$uptime" | grep -q "day"; then
+        echo "Uptime: $uptime days"
+    elif echo "$uptime" | grep -q "sec"; then
+        echo "Uptime: Less than a minute"
+    elif echo "$uptime" | grep -q "hour"; then
+        echo "Uptime: $uptime hours"
+    elif echo "$uptime" | grep -q "month"; then
+        echo "Uptime: $uptime months"
+    elif echo "$uptime" | grep -q "year"; then
+        echo "Uptime: $uptime years"
+    else
+        echo "Uptime: $uptime"
+    fi
+}
+
+# Get the raw uptime value
+RAW_UPTIME=$(uptime | awk -F'up ' '{print $2}' | awk -F',  load average' '{print $1}')
+
+# Check if uptime includes days, hours, and minutes
+if echo "$RAW_UPTIME" | grep -q "day"; then
+    DAYS=$(echo "$RAW_UPTIME" | awk '{print $1}')
+    TIME=$(echo "$RAW_UPTIME" | awk '{print $3}')
+    HOURS=$(echo "$TIME" | awk -F':' '{print $1}')
+    MINUTES=$(echo "$TIME" | awk -F':' '{print $2}')
+    FORMATTED_UPTIME="Uptime: $DAYS days, $HOURS hours and $MINUTES minutes"
+elif echo "$RAW_UPTIME" | grep -q ":"; then
+    HOURS=$(echo "$RAW_UPTIME" | awk -F':' '{print $1}')
+    MINUTES=$(echo "$RAW_UPTIME" | awk -F':' '{print $2}')
+    FORMATTED_UPTIME="Uptime: $HOURS hours and $MINUTES minutes"
 else
-    UPTIME="Uptime: Less than a minute"
+    # Format the uptime
+    FORMATTED_UPTIME=$(format_uptime "$RAW_UPTIME")
 fi
 
-LOAD_AVG=$(uptime | awk -F'load average: ' '{print $2}' | awk -F', ' '{printf "1 min: %.2f%% 5 mins: %.2f%% 15 mins: %.2f%%", $1*100, $2*100, $3*100}')
+# Function to convert data usage from binary to decimal
+convert_usage() {
+    local value=$1
+    local unit=$2
+    case $unit in
+        GiB) echo "$(awk "BEGIN {printf \"%.2f\", $value * 1.07374}") GB" ;;
+        MiB) echo "$(awk "BEGIN {printf \"%.2f\", $value * 1.04858}") MB" ;;
+        TiB) echo "$(awk "BEGIN {printf \"%.2f\", $value * 1.09951}") TB" ;;
+        PiB) echo "$(awk "BEGIN {printf \"%.2f\", $value * 1.12590}") PB" ;;
+        *) echo "$value $unit" ;;
+    esac
+}
 
 # Get data usage from vnStat for eth0 with data directory on USB
 DAILY_USAGE=$(vnstat -i ppp0 -d --dbdir /opt/var/lib/vnstat | grep "$(date +'%Y-%m-%d')" | awk '{print $8, $9}')
@@ -93,8 +132,21 @@ MONTHLY_USAGE=$(vnstat -i ppp0 -m --dbdir /opt/var/lib/vnstat | grep "$(date +'%
 YEARLY_USAGE=$(vnstat -i ppp0 -y --dbdir /opt/var/lib/vnstat | grep "$(date +'%Y')" | awk '{print $8, $9}')
 LIFETIME_USAGE=$(vnstat -i ppp0 --dbdir /opt/var/lib/vnstat | grep "total:" | awk '{print $8, $9}')
 
-# Get lifetime usage as of February 7th
-LIFETIME_USAGE_FEB7=$(vnstat -i ppp0 --dbdir /opt/var/lib/vnstat | grep "total:" | awk '{print $8, $9}')
+# Extract values and units
+DAILY_VALUE=$(echo $DAILY_USAGE | awk '{print $1}')
+DAILY_UNIT=$(echo $DAILY_USAGE | awk '{print $2}')
+MONTHLY_VALUE=$(echo $MONTHLY_USAGE | awk '{print $1}')
+MONTHLY_UNIT=$(echo $MONTHLY_USAGE | awk '{print $2}')
+YEARLY_VALUE=$(echo $YEARLY_USAGE | awk '{print $1}')
+YEARLY_UNIT=$(echo $YEARLY_USAGE | awk '{print $2}')
+LIFETIME_VALUE=$(echo $LIFETIME_USAGE | awk '{print $1}')
+LIFETIME_UNIT=$(echo $LIFETIME_USAGE | awk '{print $2}')
+
+# Convert data usage to decimal
+DAILY_USAGE_DECIMAL=$(convert_usage $DAILY_VALUE $DAILY_UNIT)
+MONTHLY_USAGE_DECIMAL=$(convert_usage $MONTHLY_VALUE $MONTHLY_UNIT)
+YEARLY_USAGE_DECIMAL=$(convert_usage $YEARLY_VALUE $YEARLY_UNIT)
+LIFETIME_USAGE_DECIMAL=$(convert_usage $LIFETIME_VALUE $LIFETIME_UNIT)
 
 ## Sign Trend
 SIGN_DATE=$(nvram get bwdpi_sig_ver)
@@ -116,22 +168,22 @@ function sendMessage()
 
 🕒 Time: $DATE
 
-📊 Status
+<b>📊 Status</b>
 🌡️ CPU Temp: $TEMP_CPUº
 🌡️ WLAN 2.4 Temp: $TEMP_WIFI24º
 🌡️ WLAN 5 Temp: $TEMP_WIFI5º
-⏱️ $UPTIME
+⏱️ $FORMATTED_UPTIME
 💻 Load Average: $LOAD_AVG
 🧠 RAM Used: $RAM_USED_PERCENTAGE% / Free: $RAM_FREE_PERCENTAGE%
 💾 Swap Used: $SWAP_USED%
 
-📅 Data Usage
-Daily Data Usage: $DAILY_USAGE (Date: $(date +'%B %d, %Y'))
-Monthly Data Usage: $MONTHLY_USAGE (Month: $(date +'%B %Y'))
-Yearly Data Usage: $YEARLY_USAGE (Year: $(date +'%Y'))
-Lifetime Data Usage: $LIFETIME_USAGE (February 7, 2025)
+<b>📅 Data Usage</b>
+Daily Data Usage: $DAILY_USAGE_DECIMAL (Date: $(date +'%B %d, %Y'))
+Monthly Data Usage: $MONTHLY_USAGE_DECIMAL (Month: $(date +'%B %Y'))
+Yearly Data Usage: $YEARLY_USAGE_DECIMAL (Year: $(date +'%Y'))
+Lifetime Data Usage: $LIFETIME_USAGE_DECIMAL (February 7, 2025)
 
-📃 Info
+<b>📃 Info</b>
 📶 Model: $MODEL_NAME
 🛠️ Firmware: $FIRMWARE_VERSION
 📡 SSID 2.4Ghz: $SSID_24GHZ
