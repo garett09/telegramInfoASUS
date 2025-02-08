@@ -176,7 +176,6 @@ function sendMessage()
 💻 Load Average: $LOAD_AVG
 🧠 RAM Used: $RAM_USED_PERCENTAGE% / Free: $RAM_FREE_PERCENTAGE%
 💾 Swap Used: $SWAP_USED%
-🕒 Time of report: $DATE
 
 <b>📅 Data Usage</b>
 Daily Data Usage: $DAILY_USAGE_DECIMAL (Date: $(date +'%B %d, %Y'))
@@ -192,6 +191,8 @@ Lifetime Data Usage: $LIFETIME_USAGE_DECIMAL (since February 7, 2025)
 🌐 IP WAN: $IP_WAN0
 🌐 IP LAN: $IP_LAN
 🕒 Trend Micro sign: $SIGN_DATE
+
+🕒 Time of report: $DATE
 EOF
 )
 
