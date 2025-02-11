@@ -169,7 +169,6 @@ function sendMessage()
 <b>$BANNER</b>
 
 <b>📊 Status</b>
-🌡️ CPU Temp: $TEMP_CPUº
 🌡️ WLAN 2.4 Temp: $TEMP_WIFI24º
 🌡️ WLAN 5 Temp: $TEMP_WIFI5º
 ⏱️ $FORMATTED_UPTIME
