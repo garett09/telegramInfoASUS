@@ -152,7 +152,7 @@ YEARLY_USAGE_DECIMAL=$(convert_usage $YEARLY_VALUE $YEARLY_UNIT)
 LIFETIME_USAGE_DECIMAL=$(convert_usage $LIFETIME_VALUE $LIFETIME_UNIT)
 
 ## Get Average Ping
-AVERAGE_PING=$(ping -c 4 8.8.8.8 | tail -n 1 | awk -F'/' '{print $5}')
+AVERAGE_PING=$(ping -c 10 1.1.1.1 | tail -n 1 | awk -F'/' '{print $5}')
 
 ## Sign Trend
 SIGN_DATE=$(nvram get bwdpi_sig_ver)
