@@ -6,12 +6,9 @@
 - Optional, but recommended, to have [Skynet](https://azagramac.gitbook.io/myblog/asus-router/instalar-skynet) installed.
 
 ### Tested
-Asus RT-AX88U Pro
-
-<img src="https://github.com/AzagraMac/telegramInfoASUS/assets/571796/aaa1ae76-c3bb-4aea-a86c-af3348fa5396" style="height: 75px" /></a>
+Asus RT-BE88U
 
 - Firmware merlin: [v388.3_0](https://onedrive.live.com/?authkey=%21AJLLKAY%2D%2D4EBqDo&id=CCE5625ED3599CE0%2121144&cid=CCE5625ED3599CE0)
-- Skynet version: [v7.4.4](https://github.com/Adamm00/IPSet_ASUS)
 
 ### Install
 - You need a telegram token, you can apply for one at https://t.me/BotFather, and the Chat ID, you can request it at https://t.me/myidbot
