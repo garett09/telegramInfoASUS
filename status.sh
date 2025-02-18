@@ -11,10 +11,12 @@ unset IP_LAN
 unset FIRMWARE_VERSION
 unset MODEL_NAME
 unset SSID_5GHZ
+unset SSID_5_1GHZ
 unset SSID_24GHZ
 unset TEMP_CPU
 unset TEMP_WIFI24
 unset TEMP_WIFI5
+unset TEMP_WIFI5_1GHZ
 unset RAM_TOTAL
 unset RAM_USED
 unset RAM_FREE
@@ -46,8 +48,9 @@ FIRMWARE_VERSION=$(echo $WEB_STATE_INFO | awk -F'_' '{print $1"."$2"."$3}')
 MODEL_NAME=$(nvram get wps_device_name)
 
 # Try different variables for SSID values
-SSID_5GHZ=$(nvram get wl1.1_ssid)
-SSID_24GHZ=$(nvram get wl0.1_ssid)
+SSID_5GHZ=$(nvram get wl1_ssid)
+SSID_24GHZ=$(nvram get wl0_ssid)
+SSID_5_1GHZ=$(nvram get wl2_ssid)
 
 # Fallback if the above variables don't work
 if [ -z "$SSID_5GHZ" ]; then
@@ -61,15 +64,16 @@ fi
 TEMP_CPU=$(cat /sys/class/thermal/thermal_zone0/temp | awk '{printf("%.0f\n", $1 / 1000) }')
 
 # Use wl0 and wl1 for temperature readings
-TEMP_WIFI24=$(wl -i wl0 phy_tempsense | awk '{print $1 / 2 + 20}')
-TEMP_WIFI5=$(wl -i wl1 phy_tempsense | awk '{print $1 / 2 + 20}')
+TEMP_WIFI24=$(wl -i eth6 phy_tempsense | awk '{print $1 / 2 + 20}')
+TEMP_WIFI5=$(wl -i eth7 phy_tempsense | awk '{print $1 / 2 + 20}')
+TEMP_WIFI5_1GHZ=$(wl -i eth8 phy_tempsense | awk '{print $1 / 2 + 20}')
 
 RAM_TOTAL=$(free | grep -i mem | awk '{print $2}')
 RAM_USED=$(free | grep -i mem | awk '{print $3}')
 RAM_FREE=$(free | grep -i mem | awk '{print $4}')
 RAM_USED_PERCENTAGE=$(free | grep Mem | awk '{ printf("%.2f", $3/$2 * 100.0) }')
 RAM_FREE_PERCENTAGE=$(free | grep Mem | awk '{ printf("%.2f", $4/$2 * 100.0) }')
-SWAP_USED=$(free | grep Swap | awk '{ printf("%.2f", $3/$2 * 100.0) }')
+SWAP_USED=$(free | grep Swap | awk '{ if ($2 > 0) { printf("%.2f", $3/$2 * 100.0) } else { print "0.00" } }')
 
 CPU_USED_1M=$(cat /proc/loadavg | awk '{print $1}')
 CPU_USED_5M=$(cat /proc/loadavg | awk '{print $2}')
@@ -114,7 +118,7 @@ else
     FORMATTED_UPTIME=$(format_uptime "$RAW_UPTIME")
 fi
 
-LOAD_AVG=$(uptime | awk -F'load average: ' '{print $2}' | awk -F', ' '{printf "1 min: %.2f%% 5 mins: %.2f%% 15 mins: %.2f%%", $1*100, $2*100, $3*100}')
+LOAD_AVG=$(cat /proc/loadavg | awk '{printf "1 min: %.2f%% 5 mins: %.2f%% 15 mins: %.2f%%", $1, $2, $3}')
 
 # Function to convert data usage from binary to decimal
 convert_usage() {
@@ -164,7 +168,7 @@ CHATID=$(cat $TELEGRAM_AUTH | grep "CHAT_ID" | awk -F "=" '{print $2}')
 API_TELEGRAM="https://api.telegram.org/bot$TOKEN/sendMessage?parse_mode=HTML"
 
 DATE=$(date +"%I:%M %p, %B %d, %Y")
-LIMIT_TEMP_CPU=70
+LIMIT_TEMP_CPU=73
 unset BANNER
 
 function sendMessage()
@@ -174,7 +178,8 @@ function sendMessage()
 
 <b>📊 Status</b>
 🌡️ WLAN 2.4 Temp: $TEMP_WIFI24º
-🌡️ WLAN 5 Temp: $TEMP_WIFI5º
+🌡️ WLAN 5-1 Temp: $TEMP_WIFI5º
+🌡️ WLAN 5-2 Temp: $TEMP_WIFI5_1GHZº
 ⏱️ $FORMATTED_UPTIME
 💻 Load Average: $LOAD_AVG
 🧠 RAM Used: $RAM_USED_PERCENTAGE% / Free: $RAM_FREE_PERCENTAGE%
@@ -184,10 +189,10 @@ function sendMessage()
 Daily Data Usage: $DAILY_USAGE_DECIMAL (Date: $(date +'%B %d, %Y'))
 Monthly Data Usage: $MONTHLY_USAGE_DECIMAL (Month: $(date +'%B %Y'))
 Yearly Data Usage: $YEARLY_USAGE_DECIMAL (Year: $(date +'%Y'))
-Lifetime Data Usage: $LIFETIME_USAGE_DECIMAL (since February 7, 2025)
+Lifetime Data Usage: $LIFETIME_USAGE_DECIMAL (since February 18, 2025)
 
 <b>📶 Ping</b>
-Average Ping: $AVERAGE_PING ms
+Average Ping: $AVERAGE_PING
 
 <b>📃 Info</b>
 📶 Model: $MODEL_NAME
