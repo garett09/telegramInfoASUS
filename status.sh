@@ -2,7 +2,7 @@
 
 #
 # Dev: garett09
-# version: 3.1 (Self-Archiving, sh-compatible)
+# version: 3.2 (Self-Archiving, sh-compatible, Dates)
 # (with "Top Users" archive logic by Gemini)
 #
 
@@ -75,7 +75,7 @@ get_client_name() {
     echo "$name"
 }
 
-# --- NEW: Function to create our archive DB if it doesn't exist ---
+# --- Function to create our archive DB if it doesn't exist ---
 init_archive_db() {
     if [ ! -f "$ARCHIVE_DB_FILE" ]; then
         echo "Creating new user archive database..."
@@ -83,30 +83,24 @@ init_archive_db() {
     fi
 }
 
-# --- NEW: Function to save today's data into our archive ---
+# --- Function to save today's data into our archive ---
 archive_daily_data() {
     local today_date=$(date +%Y-%m-%d)
     local midnight_today=$(date -d "00:00:00" +%s)
 
-    # Query the LIVE DB for all of today's users
     sqlite3 -separator ',' "$LIVE_DB_FILE" \
-        "SELECT mac, SUM(rx), SUM(tx) 
-         FROM traffic 
-         WHERE timestamp >= $midnight_today 
+        "SELECT mac, SUM(rx), SUM(tx)
+         FROM traffic
+         WHERE timestamp >= $midnight_today
          GROUP BY mac" | \
     while IFS=',' read -r db_entry rx_bytes tx_bytes; do
         clean_mac=$(extract_mac "$db_entry")
-        # Skip if MAC is blank
         if [ -z "$clean_mac" ]; then
             continue
         fi
-        
         client_name=$(get_client_name "$db_entry" "$clean_mac")
         total_bytes=$((rx_bytes + tx_bytes))
-
-        # Save this to our permanent archive
-        # This will update today's entry with the latest total
-        sqlite3 "$ARCHIVE_DB_FILE" "INSERT OR REPLACE INTO daily_usage (mac, name, date, total_bytes) 
+        sqlite3 "$ARCHIVE_DB_FILE" "INSERT OR REPLACE INTO daily_usage (mac, name, date, total_bytes)
                                     VALUES ('$clean_mac', '$client_name', '$today_date', $total_bytes);"
     done
 }
@@ -117,22 +111,19 @@ build_top_users_from_live_db() {
     local where_clause="$2"
     local __result_var=$3
     local list_output="<b>$title</b>"
-    
+
     query_result=$(sqlite3 -separator ',' "$LIVE_DB_FILE" \
-        "SELECT mac, SUM(rx), SUM(tx) 
-         FROM traffic 
-         $where_clause 
-         GROUP BY mac 
-         ORDER BY SUM(rx)+SUM(tx) DESC 
+        "SELECT mac, SUM(rx), SUM(tx)
+         FROM traffic
+         $where_clause
+         GROUP BY mac
+         ORDER BY SUM(rx)+SUM(tx) DESC
          LIMIT 5")
 
     if [ -z "$query_result" ]; then
         list_output="$list_output
 <i>No data for this period.</i>"
     else
-        # *** THIS IS THE FIX ***
-        # Use a "here-document" (<<EOF) which is compatible with /bin/sh
-        # and does not create a subshell, preserving the list_output variable.
         while IFS=',' read -r db_entry rx_bytes tx_bytes; do
             clean_mac=$(extract_mac "$db_entry")
             client_name=$(get_client_name "$db_entry" "$clean_mac")
@@ -147,7 +138,7 @@ EOF
     eval $__result_var="'$list_output'"
 }
 
-# --- NEW: Function to build lists from OUR ARCHIVE DB (for Year/Lifetime) ---
+# --- Function to build lists from OUR ARCHIVE DB (for Year/Lifetime) ---
 build_top_users_from_archive_db() {
     local title="$1"
     local where_clause="$2"
@@ -155,19 +146,17 @@ build_top_users_from_archive_db() {
     local list_output="<b>$title</b>"
 
     query_result=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
-        "SELECT name, SUM(total_bytes) 
-         FROM daily_usage 
-         $where_clause 
-         GROUP BY mac, name 
-         ORDER BY SUM(total_bytes) DESC 
+        "SELECT name, SUM(total_bytes)
+         FROM daily_usage
+         $where_clause
+         GROUP BY mac, name
+         ORDER BY SUM(total_bytes) DESC
          LIMIT 5")
 
     if [ -z "$query_result" ]; then
         list_output="$list_output
 <i>No archived data yet.</i>"
     else
-        # *** THIS IS THE FIX ***
-        # Use a "here-document" (<<EOF) which is compatible with /bin/sh
         while IFS=',' read -r client_name total_bytes; do
             total_human=$(bytes_to_human $total_bytes)
             list_output="$list_output
@@ -240,22 +229,27 @@ if [ ! -f "$LIVE_DB_FILE" ]; then
 else
     # 1. Create/Check our archive DB
     init_archive_db
-    
+
     # 2. Save today's latest data to our archive
     archive_daily_data
-    
-    # 3. Define Time Periods
+
+    # 3. Define Time Periods and Titles
     MIDNIGHT_TODAY=$(date -d "00:00:00" +%s)
     MIDNIGHT_MONTH=$(date -d "$(date +%Y-%m-01) 00:00:00" +%s)
     YEAR_START_DATE=$(date +%Y-01-01)
+    
+    # *** NEW: Get current date strings for titles ***
+    TODAY_TITLE_DATE=$(date +"%b %d, %Y") # e.g., Oct 23, 2025
+    MONTH_TITLE_DATE=$(date +"%B %Y")     # e.g., October 2025
+    YEAR_TITLE_DATE=$(date +"%Y")         # e.g., 2025
 
     # 4. Run queries
     # For Today/Month, we query the LIVE DB for speed
-    build_top_users_from_live_db "🏆 Top 5 Users (Today)" "WHERE timestamp >= $MIDNIGHT_TODAY" TOP_USERS_TODAY_LIST
-    build_top_users_from_live_db "📅 Top 5 Users (This Month)" "WHERE timestamp >= $MIDNIGHT_MONTH" TOP_USERS_MONTH_LIST
-    
+    build_top_users_from_live_db "🏆 Top 5 Users ($TODAY_TITLE_DATE)" "WHERE timestamp >= $MIDNIGHT_TODAY" TOP_USERS_TODAY_LIST
+    build_top_users_from_live_db "📅 Top 5 Users ($MONTH_TITLE_DATE)" "WHERE timestamp >= $MIDNIGHT_MONTH" TOP_USERS_MONTH_LIST
+
     # For Year/Lifetime, we query OUR NEW ARCHIVE DB for accuracy
-    build_top_users_from_archive_db "🗓️ Top 5 Users (This Year)" "WHERE date >= '$YEAR_START_DATE'" TOP_USERS_YEAR_LIST
+    build_top_users_from_archive_db "🗓️ Top 5 Users ($YEAR_TITLE_DATE)" "WHERE date >= '$YEAR_START_DATE'" TOP_USERS_YEAR_LIST
     build_top_users_from_archive_db "🌍 Top 5 Users (Lifetime)" "" TOP_USERS_LIFE_LIST
 fi
 
@@ -286,7 +280,7 @@ function sendMessage()
 <b>📅 Total Data Usage (vnStat)</b>
 Daily Data Usage: $DAILY_USAGE_DECIMAL (Date: $(date +'%B %d, %Y'))
 Monthly Data Usage: $MONTHLY_USAGE_DECIMAL (Month: $(date +'%B %Y'))
-Yearly Data Usage: $YEARLY_USAGE_DECIMAL (Year: $(date +'%B %Y'))
+Yearly Data Usage: $YEARLY_USAGE_DECIMAL (Year: $(date +'%Y'))
 Lifetime Data Usage: $LIFETIME_USAGE_DECIMAL (since February 18, 2025)
 
 <b>👤 Per-Device Usage (TrafficAnalyzer)</b>
@@ -306,6 +300,8 @@ Average Ping: $AVERAGE_PING
 🛠️ Firmware: $FIRMWARE_VERSION
 📡 SSID 2.4Ghz: $SSID_24GHZ
 📡 SSID 5Ghz: $SSID_5GHZ
+🌐 IP WAN: $IP_WAN0
+🌐 IP LAN: $IP_LAN
 🕒 Trend Micro sign: $SIGN_DATE
 
 🕒 Time of report: $DATE
