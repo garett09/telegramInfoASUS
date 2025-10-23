@@ -311,6 +311,12 @@ LIFETIME_USAGE_DECIMAL=$(convert_usage $LIFETIME_VALUE $LIFETIME_UNIT)
 AVERAGE_PING=$(ping -c 10 1.1.1.1 | tail -n 1 | awk -F'/' '{print $5}')
 SIGN_DATE=$(nvram get bwdpi_sig_ver)
 
+# --- Define Date Titles (for vnStat and Top Users) ---
+TODAY_TITLE_DATE=$(date +"%b %d, %Y")
+MONTH_TITLE_DATE=$(date +"%B %Y")
+YEAR_TITLE_DATE=$(date +"%Y")
+
+
 # --- Generate Top Users Lists ---
 
 if [ ! -f "$LIVE_DB_FILE" ]; then
@@ -329,16 +335,13 @@ else
     # 2. Save today's latest data to our archive
     archive_daily_data
 
-    # 3. Define Time Periods and Titles
+    # 3. Define Time Periods
     MIDNIGHT_TODAY=$(date -d "00:00:00" +%s)
     MIDNIGHT_MONTH=$(date -d "$(date +%Y-%m-01) 00:00:00" +%s)
     YEAR_START_DATE=$(date +%Y-01-01)
 
-    TODAY_TITLE_DATE=$(date +"%b %d, %Y")
-    MONTH_TITLE_DATE=$(date +"%B %Y")
-    YEAR_TITLE_DATE=$(date +"%Y")
-
     # 4. Run queries (Functions now include totals)
+    # Note: The ..._TITLE_DATE variables are now defined globally above
     build_top_users_from_live_db "🏆 Top 5 Users ($TODAY_TITLE_DATE)" "WHERE timestamp >= $MIDNIGHT_TODAY" TOP_USERS_TODAY_LIST
     build_top_users_from_live_db "📅 Top 5 Users ($MONTH_TITLE_DATE)" "WHERE timestamp >= $MIDNIGHT_MONTH" TOP_USERS_MONTH_LIST
     build_top_users_from_archive_db "🗓️ Top 5 Users ($YEAR_TITLE_DATE)" "WHERE date >= '$YEAR_START_DATE'" TOP_USERS_YEAR_LIST
@@ -370,9 +373,9 @@ function sendMessage()
 💾 Swap Used: $SWAP_USED%
 
 <b>📅 Total Data Usage (vnStat)</b>
-Daily Data Usage: $DAILY_USAGE_DECIMAL
-Monthly Data Usage: $MONTHLY_USAGE_DECIMAL
-Yearly Data Usage: $YEARLY_USAGE_DECIMAL
+Daily Data Usage ($TODAY_TITLE_DATE): $DAILY_USAGE_DECIMAL
+Monthly Data Usage ($MONTH_TITLE_DATE): $MONTHLY_USAGE_DECIMAL
+Yearly Data Usage ($YEAR_TITLE_DATE): $YEARLY_USAGE_DECIMAL
 Lifetime Data Usage: $LIFETIME_USAGE_DECIMAL
 
 <b>👤 Per-Device Usage (TrafficAnalyzer Archive)</b>
@@ -385,7 +388,7 @@ $TOP_USERS_YEAR_LIST
 $TOP_USERS_LIFE_LIST
 
 <b>📶 Ping</b>
-Average Ping: $AVERAGE_PING
+Average Ping: $AVERAGE_PING ms
 
 <b>📃 Info</b>
 📶 Model: $MODEL_NAME
@@ -397,8 +400,7 @@ Average Ping: $AVERAGE_PING
 🕒 Time of report: $DATE
 EOF
 )
-
-    curl -s -X POST $API_TELEGRAM \
+curl -s -X POST $API_TELEGRAM \
         -d chat_id=$CHATID \
         -d text="$TEXT" > /dev/null 2>&1
 }
