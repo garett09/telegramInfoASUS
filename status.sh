@@ -4,6 +4,7 @@
 # Dev: garett09
 # version: 3.7 (Self-Archiving, Integrated Totals)
 # (with "Top Users" archive logic by Gemini)
+# Patched for 64-bit overflow and formatting by Gemini
 #
 
 # --- Database Paths ---
@@ -30,6 +31,7 @@ convert_usage() {
     esac
 }
 
+# --- START FIXED FUNCTION (64-bit safe) ---
 # Function to convert BYTES to human-readable format
 bytes_to_human() {
     local bytes=$1
@@ -37,14 +39,15 @@ bytes_to_human() {
         echo "0.00 KB"
         return
     fi
-    if [ "$bytes" -gt 1073741824 ]; then
-        awk -v b=$bytes 'BEGIN {printf "%.2f GB", b/1073741824}'
-    elif [ "$bytes" -gt 1048576 ]; then
-        awk -v b=$bytes 'BEGIN {printf "%.2f MB", b/1048576}'
-    else
-        awk -v b=$bytes 'BEGIN {printf "%.2f KB", b/1024}'
-    fi
+    # Use awk for 64-bit number handling
+    awk -v b="$bytes" '
+        BEGIN {
+            if (b > 1073741824) { printf "%.2f GB", b/1073741824 }
+            else if (b > 1048576) { printf "%.2f MB", b/1048576 }
+            else { printf "%.2f KB", b/1024 }
+        }'
 }
+# --- END FIXED FUNCTION ---
 
 # Function to extract a clean MAC from a string
 extract_mac() {
@@ -124,23 +127,25 @@ init_archive_db() {
     fi
 }
 
+# --- START FIXED FUNCTION (64-bit safe) ---
 # --- Function to save today's data into our archive ---
 archive_daily_data() {
     local today_date=$(date +%Y-%m-%d)
     local midnight_today=$(date -d "00:00:00" +%s)
 
+    # Let SQL do the 64-bit math
     sqlite3 -separator ',' "$LIVE_DB_FILE" \
-        "SELECT mac, SUM(rx), SUM(tx)
+        "SELECT mac, SUM(rx) + SUM(tx) AS total
          FROM traffic
          WHERE timestamp >= $midnight_today
          GROUP BY mac" | \
-    while IFS=',' read -r db_entry rx_bytes tx_bytes; do
+    while IFS=',' read -r db_entry total_bytes; do
         clean_mac=$(extract_mac "$db_entry")
         if [ -z "$clean_mac" ]; then
             continue
         fi
         client_name=$(get_client_name "$db_entry" "$clean_mac")
-        total_bytes=$((rx_bytes + tx_bytes))
+        # total_bytes=$((rx_bytes + tx_bytes)) # <-- BUGGY LINE REMOVED
         # Ensure name doesn't contain single quotes which break SQL
         safe_client_name=$(echo "$client_name" | sed "s/'/''/g")
 
@@ -148,14 +153,15 @@ archive_daily_data() {
                                     VALUES ('$clean_mac', '$safe_client_name', '$today_date', $total_bytes);"
     done
 }
+# --- END FIXED FUNCTION ---
 
+# --- START FIXED FUNCTION (64-bit safe) ---
 # --- Function to calculate TOTAL usage from databases ---
 calculate_total_usage() {
     local db_path="$1"
     local table_name="$2" # 'traffic' for live, 'daily_usage' for archive
     local bytes_col_rx="$3" # 'rx' or 'total_bytes'
     local bytes_col_tx="$4" # 'tx' or empty string
-    #local time_col="$5" # 'timestamp' or 'date' # Removed, time filtering handled by where_clause
     local where_clause="$6"
     local total_bytes=0
 
@@ -171,15 +177,19 @@ calculate_total_usage() {
          FROM $table_name
          $where_clause")
 
-    # Check if result is a number
-    if [ -n "$query_result" ] && [ "$query_result" -eq "$query_result" ] 2>/dev/null; then
+    # 64-bit safe check
+    if [ -z "$query_result" ]; then
+         total_bytes=0
+    else
          total_bytes=$query_result
     fi
 
     bytes_to_human $total_bytes
 }
+# --- END FIXED FUNCTION ---
 
 
+# --- START FIXED FUNCTION (64-bit safe + formatting) ---
 # --- *** UPDATED: Function to build lists & add TOTALS (Live DB) *** ---
 build_top_users_from_live_db() {
     local title="$1"
@@ -187,36 +197,38 @@ build_top_users_from_live_db() {
     local __result_var=$3
     local list_output="<b>$title</b>"
 
+    # Let SQL do the 64-bit math
     query_result=$(sqlite3 -separator ',' "$LIVE_DB_FILE" \
-        "SELECT mac, SUM(rx), SUM(tx)
+        "SELECT mac, SUM(rx) + SUM(tx) AS total
          FROM traffic
          $where_clause
          GROUP BY mac
-         ORDER BY SUM(rx)+SUM(tx) DESC
+         ORDER BY total DESC
          LIMIT 5")
 
     if [ -z "$query_result" ]; then
-        list_output="$list_output
-<i>No data for this period.</i>"
+        list_output=$(printf "%s\n<i>No data for this period.</i>" "$list_output")
     else
-        while IFS=',' read -r db_entry rx_bytes tx_bytes; do
+        while IFS=',' read -r db_entry total_bytes; do
             clean_mac=$(extract_mac "$db_entry")
             client_name=$(get_client_name "$db_entry" "$clean_mac")
-            total_bytes=$((rx_bytes + tx_bytes))
+            # total_bytes=$((rx_bytes + tx_bytes)) # <-- BUGGY LINE REMOVED
             total_human=$(bytes_to_human $total_bytes)
-            list_output="$list_output
-- $client_name: $total_human"
+            # Use printf for correct newlines
+            list_output=$(printf "%s\n- %s: %s" "$list_output" "$client_name" "$total_human")
         done <<EOF
 $query_result
 EOF
         # *** ADD TOTAL ***
         local total_for_period=$(calculate_total_usage "$LIVE_DB_FILE" "traffic" "rx" "tx" "$where_clause")
-        list_output="$list_output
-<b>Total: $total_for_period</b>"
+        # Use printf for correct newlines
+        list_output=$(printf "%s\n<b>Total: %s</b>" "$list_output" "$total_for_period")
     fi
     eval $__result_var="'$list_output'"
 }
+# --- END FIXED FUNCTION ---
 
+# --- START FIXED FUNCTION (Formatting) ---
 # --- *** UPDATED: Function to build lists & add TOTALS (Archive DB) *** ---
 build_top_users_from_archive_db() {
     local title="$1"
@@ -233,25 +245,25 @@ build_top_users_from_archive_db() {
          LIMIT 5")
 
     if [ -z "$query_result" ]; then
-        list_output="$list_output
-<i>No archived data yet.</i>"
+        list_output=$(printf "%s\n<i>No archived data yet.</i>" "$list_output")
     else
         while IFS=',' read -r client_name total_bytes; do
              # Ensure name doesn't contain single quotes before printing
             safe_client_name=$(echo "$client_name" | sed "s/'/''/g")
             total_human=$(bytes_to_human $total_bytes)
-            list_output="$list_output
-- $safe_client_name: $total_human"
+            # Use printf for correct newlines
+            list_output=$(printf "%s\n- %s: %s" "$list_output" "$safe_client_name" "$total_human")
         done <<EOF
 $query_result
 EOF
         # *** ADD TOTAL ***
         local total_for_period=$(calculate_total_usage "$ARCHIVE_DB_FILE" "daily_usage" "total_bytes" "" "$where_clause")
-        list_output="$list_output
-<b>Total: $total_for_period</b>"
+        # Use printf for correct newlines
+        list_output=$(printf "%s\n<b>Total: %s</b>" "$list_output" "$total_for_period")
     fi
     eval $__result_var="'$list_output'"
 }
+# --- END FIXED FUNCTION ---
 
 # --- Main Variable Setup ---
 # (Removed unset list for brevity - assumed handled)
