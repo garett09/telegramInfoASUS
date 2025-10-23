@@ -4,7 +4,7 @@
 # Dev: garett09
 # version: 3.7 (Self-Archiving, Integrated Totals)
 # (with "Top Users" archive logic by Gemini)
-# Patched for 64-bit overflow and formatting by Gemini
+# Patched for 64-bit overflow, formatting, and TB/PB by Gemini
 #
 
 # --- Database Paths ---
@@ -31,7 +31,7 @@ convert_usage() {
     esac
 }
 
-# --- START FIXED FUNCTION (64-bit safe) ---
+# --- START FIXED FUNCTION (64-bit safe + TB/PB) ---
 # Function to convert BYTES to human-readable format
 bytes_to_human() {
     local bytes=$1
@@ -42,9 +42,11 @@ bytes_to_human() {
     # Use awk for 64-bit number handling
     awk -v b="$bytes" '
         BEGIN {
-            if (b > 1073741824) { printf "%.2f GB", b/1073741824 }
-            else if (b > 1048576) { printf "%.2f MB", b/1048576 }
-            else { printf "%.2f KB", b/1024 }
+            if (b > 1125899906842624) { printf "%.2f PB", b/1125899906842624 } # 2^50
+            else if (b > 1099511627776) { printf "%.2f TB", b/1099511627776 }  # 2^40
+            else if (b > 1073741824) { printf "%.2f GB", b/1073741824 } # 2^30
+            else if (b > 1048576) { printf "%.2f MB", b/1048576 }   # 2^20
+            else { printf "%.2f KB", b/1024 }                 # 2^10
         }'
 }
 # --- END FIXED FUNCTION ---
@@ -383,7 +385,7 @@ $TOP_USERS_YEAR_LIST
 $TOP_USERS_LIFE_LIST
 
 <b>📶 Ping</b>
-Average Ping: $AVERAGE_PING ms
+Average Ping: $AVERAGE_PING
 
 <b>📃 Info</b>
 📶 Model: $MODEL_NAME
