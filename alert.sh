@@ -2,8 +2,8 @@
 
 #
 # Script: connmon_alert.sh (Real-Time ConnMon Monitoring)
-# Version: 1.17 FINAL - Explicit Field Parsing Fix
-# Purpose: Uses individual 'cut' commands to guarantee correct variable assignment.
+# Version: 1.16 FINAL - Ensure Log File Exists
+# Purpose: Ensures the alert log file is created if it doesn't exist.
 #
 
 # --- Database Paths & Telegram Config ---
@@ -11,17 +11,22 @@ CONMON_DB="/jffs/addons/connmon.d/connstats.db"
 TELEGRAM_AUTH="/jffs/telegram.env"
 
 # --- Load Telegram Variables ---
-TOKEN=$(cat "$TELEGRAM_AUTH" | grep "TOKEN" | awk -F "=" '{print $2}')
-CHATID=$(cat "$TELEGRAM_AUTH" | grep "CHAT_ID" | awk -F "=" '{print $2}')
+TOKEN=$(grep "TOKEN" "$TELEGRAM_AUTH" | cut -d= -f2- | tr -d '[:space:]')
+CHATID=$(grep "CHAT_ID" "$TELEGRAM_AUTH" | cut -d= -f2- | tr -d '[:space:]')
 API_TELEGRAM="https://api.telegram.org/bot$TOKEN/sendMessage?parse_mode=HTML"
 
-# --- Alert Thresholds (PRODUCTION VALUES - Set these appropriately) ---
-LIMIT_PING=100.0
-LIMIT_JITTER=15.0
-LIMIT_QUALITY=90.0
+# --- Alert Thresholds (PRODUCTION VALUES) ---
+LIMIT_PING=100.0   # Alert if Ping is over 100 ms
+LIMIT_JITTER=15.0  # Alert if Jitter is over 15.0 ms
+LIMIT_QUALITY=90.0 # Alert if Quality is below 90.0%
 
 # --- Log Path ---
 ALERT_LOG="/jffs/connmon_alerts.log"
+
+# --- Ensure Log File Exists ---
+# Use 'touch' to create the file if it doesn't exist, or update its timestamp if it does.
+touch "$ALERT_LOG"
+chmod 644 "$ALERT_LOG" # Ensure permissions allow writing and reading
 
 # --- Helper Function: Get ConnMon Data (Uses fixed DB query) ---
 get_conmon_stats() {
@@ -53,14 +58,11 @@ get_conmon_stats() {
 check_and_send_alert() {
     # 1. Get current ConnMon data
     local CONMON_DATA=$(get_conmon_stats "$CONMON_DB")
-
-    # --- CRITICAL FIX: Use explicit 'cut' for each field ---
     local CONMON_TIME=$(echo "$CONMON_DATA" | cut -d, -f1)
     local CONMON_DATE=$(echo "$CONMON_DATA" | cut -d, -f2)
     local CONMON_PING=$(echo "$CONMON_DATA" | cut -d, -f3)
     local CONMON_JITTER=$(echo "$CONMON_DATA" | cut -d, -f4)
     local CONMON_QUALITY=$(echo "$CONMON_DATA" | cut -d, -f5)
-    # ----------------------------------------------------
 
     local ALERT_DETAILS=""
     local alert_count=0
@@ -92,7 +94,6 @@ check_and_send_alert() {
     if [ "$alert_count" -gt 0 ]; then
         # --- LOGGING CODE ---
         echo "[${CURRENT_DATETIME}] | $alert_count" >> "$ALERT_LOG"
-        chmod 644 "$ALERT_LOG"
         # --------------------
 
         # --- Use Heredoc for MESSAGE CONSTRUCTION ---
@@ -112,8 +113,6 @@ EOF
         curl -s -X POST $API_TELEGRAM \
             -d chat_id=$CHATID \
             -d text="$TEXT" > /dev/null 2>&1
-
-        echo "TEST SUCCESS: Alert sent for $alert_count issues. Check Telegram." # Add this back for test confirmation
     fi
 }
 
