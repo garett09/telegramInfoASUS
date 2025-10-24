@@ -11,8 +11,8 @@ CONMON_DB="/jffs/addons/connmon.d/connstats.db"
 TELEGRAM_AUTH="/jffs/telegram.env"
 
 # --- Load Telegram Variables ---
-TOKEN=$(grep "TOKEN" "$TELEGRAM_AUTH" | cut -d= -f2- | tr -d '[:space:]')
-CHATID=$(grep "CHAT_ID" "$TELEGRAM_AUTH" | cut -d= -f2- | tr -d '[:space:]')
+TOKEN=$(cat "$TELEGRAM_AUTH" | grep "TOKEN" | awk -F "=" '{print $2}')
+CHATID=$(cat "$TELEGRAM_AUTH" | grep "CHAT_ID" | awk -F "=" '{print $2}')
 API_TELEGRAM="https://api.telegram.org/bot$TOKEN/sendMessage?parse_mode=HTML"
 
 # --- Alert Thresholds (PRODUCTION VALUES) ---
