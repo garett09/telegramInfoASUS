@@ -2,8 +2,8 @@
 
 #
 # Dev: garett09
-# version: 7.7 (FINAL - Top 5 Summary)
-# - Moved "Top 5 Users (Today)" to the summary section at the top of the report.
+# version: 7.9 (FINAL - Improved Uptime Format)
+# - Replaced format_uptime function to show Days, Hours, Mins, Secs.
 #
 
 # --- Database Paths ---
@@ -14,10 +14,31 @@ ALERT_LOG="/jffs/connmon_alerts.log" # Log file created by the separate alert sc
 
 # --- Helper Functions ---
 
-# Function to format uptime
+# --- NEW UPTIME FUNCTION ---
 format_uptime() {
-    uptime | sed 's/.*up \([^,]*\), .*/\1/'
+    # Read the total uptime in seconds from /proc/uptime
+    local total_seconds=$(cat /proc/uptime | awk '{print $1}' | cut -d. -f1)
+    
+    local days=$(($total_seconds / 86400))
+    local hours=$((($total_seconds % 86400) / 3600))
+    local minutes=$((($total_seconds % 3600) / 60))
+    local seconds=$(($total_seconds % 60))
+    
+    local output=""
+    
+    if [ "$days" -gt 0 ]; then
+        output="${days}d ${hours}h ${minutes}m ${seconds}s"
+    elif [ "$hours" -gt 0 ]; then
+        output="${hours}h ${minutes}m ${seconds}s"
+    elif [ "$minutes" -gt 0 ]; then
+        output="${minutes}m ${seconds}s"
+    else
+        output="${seconds}s"
+    fi
+    
+    echo "$output"
 }
+# --- END NEW UPTIME FUNCTION ---
 
 # Function to convert vnstat usage
 convert_usage() {
@@ -181,8 +202,7 @@ build_top_users_from_live_db() {
         done <<EOF
 $query_result
 EOF
-        local total_for_period=$(calculate_total_usage "$LIVE_DB_FILE" "traffic" "rx" "tx" "$where_clause")
-        list_output=$(printf "%s\n<b>Total: %s</b>" "$list_output" "$total_for_period")
+        # Total line removed as requested
     fi
     eval $__result_var="'$list_output'"
 }
@@ -212,8 +232,7 @@ build_top_users_from_archive_db() {
         done <<EOF
 $query_result
 EOF
-        local total_for_period=$(calculate_total_usage "$ARCHIVE_DB_FILE" "daily_usage" "total_bytes" "" "$where_clause")
-        list_output=$(printf "%s\n<b>Total: %s</b>" "$list_output" "$total_for_period")
+        # Total line removed as requested
     fi
     eval $__result_var="'$list_output'"
 }
@@ -295,8 +314,10 @@ EOF
 # Function to get Recent Alerts Summary (Filters for Today)
 get_recent_alerts_summary() {
     local log_file="$ALERT_LOG"
-    local __result_var=$1
     local output=""
+    
+    # Set defaults
+    ALERT_COUNT_TODAY=0
     
     local today_date_filter=$(date +"%Y-%m-%d")
 
@@ -309,10 +330,14 @@ get_recent_alerts_summary() {
         if [ "$total_alerts" -eq 0 ]; then
             output="No ConnMon alerts were triggered today."
         else
+            # Process today's alert lines
             local summary_list=$(echo "$todays_alerts" | awk -F'|' '{
-                gsub(/\[|\]/,"", $1);
+                gsub(/\[|\]/,"", $1); 
                 split($1, time_parts, " ");
-                printf " - %s (%s issues)\n", time_parts[2], $2;
+                gsub(/ /,"", $2); 
+                gsub(/^[ \t]+|[ \t]+$/, "", $3);
+                gsub(/; /, ", ", $3); 
+                printf " - %s (%s issues): %s\n", time_parts[2], $2, $3; 
             }' | sort -r | uniq)
             
             local unique_events=$(echo "$summary_list" | grep -c 'issues)') 
@@ -320,13 +345,13 @@ get_recent_alerts_summary() {
             if [ "$unique_events" -eq 0 ]; then
                  output="No valid alerts found for today (or log format issue)."
             else
-                 output=$(printf "🚨 %d unique alert events triggered today:\n%s" "$unique_events" "$summary_list")
+                 output=$(printf "🚨 %d alert events triggered today:\n%s" "$unique_events" "$summary_list")
+                 ALERT_COUNT_TODAY=$unique_events # Set global alert count
             fi
         fi
     fi
-    # Sanitize output for HTML before assigning
-    output=$(echo "$output" | sed 's/&/&amp;/g; s/</&lt;/g; s/>/&gt;/g')
-    eval $__result_var="'$output'"
+    # Set the global variable
+    ALERT_SUMMARY_TEXT=$(echo "$output" | sed 's/&/&amp;/g; s/</&lt;/g; s/>/&gt;/g')
 }
 
 
@@ -351,6 +376,9 @@ SSID_5GHZ=$(echo "$SSID_5GHZ_RAW" | sed 's/&/&amp;/g; s/</&lt;/g; s/>/&gt;/g')
 SSID_24GHZ=$(echo "$SSID_24GHZ_RAW" | sed 's/&/&amp;/g; s/</&lt;/g; s/>/&gt;/g')
 SSID_5_1GHZ=$(echo "$SSID_5_1GHZ_RAW" | sed 's/&/&amp;/g; s/</&lt;/g; s/>/&gt;/g')
 SIGN_DATE=$(nvram get bwdpi_sig_ver | sed 's/&/&amp;/g; s/</&lt;/g; s/>/&gt;/g')
+
+# --- THIS IS THE FIXED LINE ---
+# Use the new format_uptime function and sanitize its output
 FORMATTED_UPTIME=$(format_uptime | sed 's/&/&amp;/g; s/</&lt;/g; s/>/&gt;/g')
 
 # Numeric/safe values
@@ -403,8 +431,8 @@ get_connmon_history 'start of month' CONMON_MONTH_AVG
 get_connmon_history 'start of year' CONMON_YEAR_AVG
 get_connmon_history '1970-01-01' CONMON_LIFETIME_AVG
 
-# Alert Summary Retrieval
-get_recent_alerts_summary ALERT_SUMMARY
+# Alert Summary Retrieval (Sets $ALERT_SUMMARY_TEXT and $ALERT_COUNT_TODAY)
+get_recent_alerts_summary
 
 
 # --- Generate Top Users Lists ---
@@ -447,27 +475,24 @@ unset BANNER
 # --- START: FINAL sendMessage FUNCTION (Clean) ---
 function sendMessage()
 {
-    # --- DYNAMIC BANNER LOGIC (v1.1) ---
+    # --- DYNAMIC BANNER LOGIC (v1.2 - Clean Summary) ---
     local headline=""
     
-    # Check if $ALERT_SUMMARY contains the "No ConnMon alerts" message.
-    if ! echo "$ALERT_SUMMARY" | grep -q "No ConnMon alerts"; then
+    # $ALERT_COUNT_TODAY is a global variable set by get_recent_alerts_summary
+    if [ "$ALERT_COUNT_TODAY" -gt 0 ]; then
         # Priority 1: Alerts were found.
-        # Extract the count (e.g., "🚨 5 unique alert events...")
-        local alert_count=$(echo "$ALERT_SUMMARY" | awk -F' ' '{print $2}')
-        if [ -z "$alert_count" ]; then alert_count="!"; fi # Fallback
-        headline="🚨 ${alert_count} ALERTS"
+        headline=$(printf "🚨 Status: ALERT (%d events)" "$ALERT_COUNT_TODAY")
         
     elif [ "$TEMP_CPU" -gt "$LIMIT_TEMP_CPU" ]; then
         # Priority 2: High CPU Temp
-        headline="🔥 HIGH CPU"
+        headline=$(printf "🔥 Status: HIGH CPU (%sº)" "$TEMP_CPU")
     else
         # Priority 3: All Clear
-        headline="❄️ ALL CLEAR"
+        headline="❄️ Status: ALL CLEAR"
     fi
     
     # Assemble the final banner with key datapoints
-    BANNER=$(printf "<b>%s | CPU: %sº | Ping: %s ms | Daily: %s</b>" \
+    BANNER=$(printf "<b>%s</b>\nCPU: <code>%sº</code> | Ping: <code>%s ms</code> | Daily: <code>%s</code>" \
         "$headline" \
         "${TEMP_CPU:-N/A}" \
         "${CONMON_PING:-N/A}" \
@@ -481,7 +506,7 @@ $BANNER
 $TOP_USERS_TODAY_LIST
 
 <b>⚠️ Recent Alerts</b>
-$ALERT_SUMMARY
+$ALERT_SUMMARY_TEXT
 
 <b>📊 Status</b>
 🌡️ WLAN 2.4 Temp: $TEMP_WIFI24º
@@ -516,7 +541,7 @@ $TOP_USERS_YEAR_LIST
 $TOP_USERS_LIFE_LIST
 
 <b>📶 Ping</b>
-Average Ping: $AVERAGE_PING ms
+Average Ping: $AVERAGE_PING
 
 <b>📃 Info</b>
 📶 Model: $MODEL_NAME
