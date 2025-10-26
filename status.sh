@@ -2,10 +2,8 @@
 
 #
 # Dev: garett09
-# version: 7.4 (FINAL SCRIPT - Robust Log Reading)
-# - Integrates ConnMon Hourly Average, History, and Alert Summary.
-# - Contains all fixes for 64-bit math, HTML parsing, and error handling.
-# - Corrected alert summary function for empty log files.
+# version: 7.7 (FINAL - Top 5 Summary)
+# - Moved "Top 5 Users (Today)" to the summary section at the top of the report.
 #
 
 # --- Database Paths ---
@@ -294,43 +292,35 @@ EOF
     eval $__result_var="'$result_output'"
 }
 
-# --- ALERT REPORTING FUNCTION (FINAL CLEAN FIX) ---
+# Function to get Recent Alerts Summary (Filters for Today)
 get_recent_alerts_summary() {
     local log_file="$ALERT_LOG"
     local __result_var=$1
     local output=""
+    
+    local today_date_filter=$(date +"%Y-%m-%d")
 
     if [ ! -f "$log_file" ]; then
         output="No recent alert log found."
     else
-        # Use grep -c directly on the file for an accurate count of lines containing '|'
-        local total_alerts=$(grep -c '|' "$log_file" || echo 0) # Ensure 0 if grep fails or finds none
+        local todays_alerts=$(grep "^\[${today_date_filter}" "$log_file")
+        local total_alerts=$(echo "$todays_alerts" | wc -l)
 
         if [ "$total_alerts" -eq 0 ]; then
-            # If the count is truly zero, report no alerts.
-            output="No ConnMon alerts were triggered recently."
+            output="No ConnMon alerts were triggered today."
         else
-            # If alerts exist, get the last 50 lines containing '|'
-            local recent_alerts=$(grep '|' "$log_file" | tail -n 50)
-            
-            # Process these lines to create the summary list
-            local summary_list=$(echo "$recent_alerts" | awk -F'|' '{
-                # $1 is [YYYY-MM-DD HH:MM:SS] | $2 is Count
-                gsub(/\[|\]/,"", $1); # Remove brackets from timestamp
-                gsub(/ /,"", $2); # Remove spaces from count
-                # Only print if both fields were successfully extracted
-                if ($1 != "" && $2 != "") {
-                   printf " - %s (%s issues)\n", $1, $2; 
-                }
+            local summary_list=$(echo "$todays_alerts" | awk -F'|' '{
+                gsub(/\[|\]/,"", $1);
+                split($1, time_parts, " ");
+                printf " - %s (%s issues)\n", time_parts[2], $2;
             }' | sort -r | uniq)
             
-            # Count the number of unique lines *after* formatting
-            local unique_events=$(echo "$summary_list" | grep -c 'issues)') # Count lines actually containing "( issues)"
+            local unique_events=$(echo "$summary_list" | grep -c 'issues)') 
 
             if [ "$unique_events" -eq 0 ]; then
-                 output="No ConnMon alerts were triggered recently (or log format issue)."
+                 output="No valid alerts found for today (or log format issue)."
             else
-                 output=$(printf "🚨 %d unique alert events triggered recently:\n%s" "$unique_events" "$summary_list")
+                 output=$(printf "🚨 %d unique alert events triggered today:\n%s" "$unique_events" "$summary_list")
             fi
         fi
     fi
@@ -338,12 +328,11 @@ get_recent_alerts_summary() {
     output=$(echo "$output" | sed 's/&/&amp;/g; s/</&lt;/g; s/>/&gt;/g')
     eval $__result_var="'$output'"
 }
-# --- END ALERT REPORTING FUNCTION ---
 
 
 # --- Main Logic Starts Here ---
 
-# Initialize DB first to prevent "no such table" errors
+# Initialize DB first
 init_archive_db
 
 # Sanitize text variables
@@ -458,8 +447,38 @@ unset BANNER
 # --- START: FINAL sendMessage FUNCTION (Clean) ---
 function sendMessage()
 {
+    # --- DYNAMIC BANNER LOGIC (v1.1) ---
+    local headline=""
+    
+    # Check if $ALERT_SUMMARY contains the "No ConnMon alerts" message.
+    if ! echo "$ALERT_SUMMARY" | grep -q "No ConnMon alerts"; then
+        # Priority 1: Alerts were found.
+        # Extract the count (e.g., "🚨 5 unique alert events...")
+        local alert_count=$(echo "$ALERT_SUMMARY" | awk -F' ' '{print $2}')
+        if [ -z "$alert_count" ]; then alert_count="!"; fi # Fallback
+        headline="🚨 ${alert_count} ALERTS"
+        
+    elif [ "$TEMP_CPU" -gt "$LIMIT_TEMP_CPU" ]; then
+        # Priority 2: High CPU Temp
+        headline="🔥 HIGH CPU"
+    else
+        # Priority 3: All Clear
+        headline="❄️ ALL CLEAR"
+    fi
+    
+    # Assemble the final banner with key datapoints
+    BANNER=$(printf "<b>%s | CPU: %sº | Ping: %s ms | Daily: %s</b>" \
+        "$headline" \
+        "${TEMP_CPU:-N/A}" \
+        "${CONMON_PING:-N/A}" \
+        "${DAILY_USAGE_DECIMAL:-N/A}"
+    )
+    # --- END DYNAMIC BANNER LOGIC ---
+
     TEXT=$(cat <<EOF
-<b>$BANNER</b>
+$BANNER
+
+$TOP_USERS_TODAY_LIST
 
 <b>⚠️ Recent Alerts</b>
 $ALERT_SUMMARY
@@ -489,9 +508,7 @@ Monthly Data Usage ($MONTH_TITLE_DATE): $MONTHLY_USAGE_DECIMAL
 Yearly Data Usage ($YEAR_TITLE_DATE): $YEARLY_USAGE_DECIMAL
 Lifetime Data Usage: $LIFETIME_USAGE_DECIMAL
 
-<b>👤 Per-Device Usage (TrafficAnalyzer Archive)</b>
-$TOP_USERS_TODAY_LIST
-
+<b>👤 Historical Device Usage</b>
 $TOP_USERS_MONTH_LIST
 
 $TOP_USERS_YEAR_LIST
@@ -522,11 +539,5 @@ EOF
 }
 # --- END: FINAL sendMessage FUNCTION ---
 
-if [ "$TEMP_CPU" -gt "$LIMIT_TEMP_CPU" ]
-then
-    BANNER="🔥 $MODEL_NAME | CPU: $TEMP_CPUº 🔥"
-    sendMessage
-else
-    BANNER="❄️ $MODEL_NAME | CPU: $TEMP_CPUº ❄️"
-    sendMessage
-fi
+# --- Final Execution ---
+sendMessage
