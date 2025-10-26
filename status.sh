@@ -98,8 +98,8 @@ get_client_name() {
     fi
      if [ -z "$final_name" ]; then
         if echo "$raw_data" | grep -q '>'; then
-             parsed_name=$(echo "$raw_data" | awk -F'>' '{print $1}')
-             if [ -n "$parsed_name" ] && [ "$parsed_name" != "$clean_mac" ]; then final_name=$(echo "$parsed_name" | sed 's/^[ \t]*//;s/[ \t]*$//'); fi
+            parsed_name=$(echo "$raw_data" | awk -F'>' '{print $1}')
+            if [ -n "$parsed_name" ] && [ "$parsed_name" != "$clean_mac" ]; then final_name=$(echo "$parsed_name" | sed 's/^[ \t]*//;s/[ \t]*$//'); fi
         fi
     fi
     if [ -z "$final_name" ]; then
@@ -137,7 +137,7 @@ archive_daily_data() {
         safe_client_name=$(echo "$client_name" | sed "s/'/''/g") # Safe for SQL insert
 
         sqlite3 "$ARCHIVE_DB_FILE" "INSERT OR REPLACE INTO daily_usage (mac, name, date, total_bytes)
-                                    VALUES ('$clean_mac', '$safe_client_name', '$today_date', $total_bytes);"
+                                     VALUES ('$clean_mac', '$safe_client_name', '$today_date', $total_bytes);"
     done
 
     # 2. ConnMon History Archiving (Saves the day's average)
@@ -158,7 +158,7 @@ archive_daily_data() {
              if [ -z "$quality_avg" ]; then quality_avg=0; fi
 
             sqlite3 "$ARCHIVE_DB_FILE" "INSERT OR REPLACE INTO connmon_history (date, avg_ping, avg_jitter, avg_quality)
-                                        VALUES ('$today_date', $ping_avg, $jitter_avg, $quality_avg);"
+                                         VALUES ('$today_date', $ping_avg, $jitter_avg, $quality_avg);"
         fi
     fi
 }
@@ -309,7 +309,14 @@ get_recent_alerts_summary() {
         output="No recent alert log found."
     else
         local todays_alerts=$(grep "^\[${today_date_filter}" "$log_file")
-        local total_alerts=$(echo "$todays_alerts" | wc -l)
+        local total_alerts=0 # Default to 0
+
+        # --- FIX ---
+        # Only count lines if the grep result is not empty
+        if [ -n "$todays_alerts" ]; then
+            total_alerts=$(echo "$todays_alerts" | wc -l)
+        fi
+        # --- END FIX ---
 
         if [ "$total_alerts" -eq 0 ]; then
             output="No ConnMon alerts were triggered today."
@@ -410,7 +417,7 @@ CONMON_QUALITY=$(echo "$CONMON_DATA" | cut -d, -f4)
 get_connmon_history '-7 day' CONMON_WEEK_AVG
 get_connmon_history 'start of month' CONMON_MONTH_AVG
 get_connmon_history 'start of year' CONMON_YEAR_AVG
-get_connmon_history '1970-0J-01' CONMON_LIFETIME_AVG
+get_connmon_history '1970-01-01' CONMON_LIFETIME_AVG
 
 # Alert Summary Retrieval (Sets $ALERT_SUMMARY_TEXT and $ALERT_COUNT_TODAY)
 get_recent_alerts_summary
