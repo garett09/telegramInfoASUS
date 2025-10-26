@@ -2,8 +2,8 @@
 
 #
 # Dev: garett09
-# version: 7.9 (FINAL - Improved Uptime Format)
-# - Replaced format_uptime function to show Days, Hours, Mins, Secs.
+# version: 8.0 (FINAL - Added Historical Label)
+# - Added a clear header for the historical ConnMon section.
 #
 
 # --- Database Paths ---
@@ -14,7 +14,7 @@ ALERT_LOG="/jffs/connmon_alerts.log" # Log file created by the separate alert sc
 
 # --- Helper Functions ---
 
-# --- NEW UPTIME FUNCTION ---
+# Function to format uptime
 format_uptime() {
     # Read the total uptime in seconds from /proc/uptime
     local total_seconds=$(cat /proc/uptime | awk '{print $1}' | cut -d. -f1)
@@ -38,7 +38,6 @@ format_uptime() {
     
     echo "$output"
 }
-# --- END NEW UPTIME FUNCTION ---
 
 # Function to convert vnstat usage
 convert_usage() {
@@ -162,21 +161,6 @@ archive_daily_data() {
                                         VALUES ('$today_date', $ping_avg, $jitter_avg, $quality_avg);"
         fi
     fi
-}
-
-# Function to calculate total usage (64-bit safe)
-calculate_total_usage() {
-    local db_path="$1"
-    local table_name="$2"
-    local bytes_col_rx="$3"
-    local bytes_col_tx="$4"
-    local where_clause="$6"
-    local total_bytes=0
-    local select_cols="SUM($bytes_col_rx)"
-    if [ -n "$bytes_col_tx" ]; then select_cols="$select_cols + SUM($bytes_col_tx)"; fi
-    query_result=$(sqlite3 "$db_path" "SELECT $select_cols FROM $table_name $where_clause")
-    if [ -z "$query_result" ]; then total_bytes=0; else total_bytes=$query_result; fi
-    bytes_to_human $total_bytes
 }
 
 # Function to build Top 5 Users list from Live DB
@@ -376,9 +360,6 @@ SSID_5GHZ=$(echo "$SSID_5GHZ_RAW" | sed 's/&/&amp;/g; s/</&lt;/g; s/>/&gt;/g')
 SSID_24GHZ=$(echo "$SSID_24GHZ_RAW" | sed 's/&/&amp;/g; s/</&lt;/g; s/>/&gt;/g')
 SSID_5_1GHZ=$(echo "$SSID_5_1GHZ_RAW" | sed 's/&/&amp;/g; s/</&lt;/g; s/>/&gt;/g')
 SIGN_DATE=$(nvram get bwdpi_sig_ver | sed 's/&/&amp;/g; s/</&lt;/g; s/>/&gt;/g')
-
-# --- THIS IS THE FIXED LINE ---
-# Use the new format_uptime function and sanitize its output
 FORMATTED_UPTIME=$(format_uptime | sed 's/&/&amp;/g; s/</&lt;/g; s/>/&gt;/g')
 
 # Numeric/safe values
@@ -429,7 +410,7 @@ CONMON_QUALITY=$(echo "$CONMON_DATA" | cut -d, -f4)
 get_connmon_history '-7 day' CONMON_WEEK_AVG
 get_connmon_history 'start of month' CONMON_MONTH_AVG
 get_connmon_history 'start of year' CONMON_YEAR_AVG
-get_connmon_history '1970-01-01' CONMON_LIFETIME_AVG
+get_connmon_history '1970-0J-01' CONMON_LIFETIME_AVG
 
 # Alert Summary Retrieval (Sets $ALERT_SUMMARY_TEXT and $ALERT_COUNT_TODAY)
 get_recent_alerts_summary
@@ -522,6 +503,7 @@ Avg. Ping/Latency: $CONMON_PING ms
 Avg. Jitter: $CONMON_JITTER ms
 Avg. Quality: $CONMON_QUALITY %
 
+<b>📊 Historical ConnMon Averages</b>
  ┣ Last 7 Days Avg.: $CONMON_WEEK_AVG
  ┣ This Month Avg.: $CONMON_MONTH_AVG
  ┣ This Year Avg.: $CONMON_YEAR_AVG
