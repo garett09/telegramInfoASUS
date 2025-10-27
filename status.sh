@@ -1,4 +1,5 @@
 #!/bin/sh
+export PATH="/bin:/usr/bin:/sbin:/usr/sbin:/opt/bin:/opt/sbin"
 
 #
 # Dev: garett09
