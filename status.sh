@@ -3,15 +3,19 @@ export PATH="/bin:/usr/bin:/sbin:/usr/sbin:/opt/bin:/opt/sbin"
 
 #
 # Dev: garett09
-# version: 8.0 (FINAL - Added Historical Label)
-# - Added a clear header for the historical ConnMon section.
+# version: 8.6 (FINAL - Removed old Ping)
+# - Integrated Wicens DB archiving for reboots.
+# - Moved Wicens sections for clarity.
+# - Removed redundant Ping section (covered by ConnMon)
 #
 
 # --- Database Paths ---
 LIVE_DB_FILE="/jffs/.sys/TrafficAnalyzer/TrafficAnalyzer.db"
 ARCHIVE_DB_FILE="/jffs/scripts/user_archive.db"
 CONMON_DB="/jffs/addons/connmon.d/connstats.db"
-ALERT_LOG="/jffs/connmon_alerts.log" # Log file created by the separate alert script
+ALERT_LOG="/jffs/connmon_alerts.log"
+WICENS_LOG="/jffs/addons/wicens/wicens.log"
+WICENS_HISTORY="/jffs/addons/wicens/wicens_wan_history.wic"
 
 # --- Helper Functions ---
 
@@ -19,6 +23,35 @@ ALERT_LOG="/jffs/connmon_alerts.log" # Log file created by the separate alert sc
 format_uptime() {
     # Read the total uptime in seconds from /proc/uptime
     local total_seconds=$(cat /proc/uptime | awk '{print $1}' | cut -d. -f1)
+    
+    local days=$(($total_seconds / 86400))
+    local hours=$((($total_seconds % 86400) / 3600))
+    local minutes=$((($total_seconds % 3600) / 60))
+    local seconds=$(($total_seconds % 60))
+    
+    local output=""
+    
+    if [ "$days" -gt 0 ]; then
+        output="${days}d ${hours}h ${minutes}m ${seconds}s"
+    elif [ "$hours" -gt 0 ]; then
+        output="${hours}h ${minutes}m ${seconds}s"
+    elif [ "$minutes" -gt 0 ]; then
+        output="${minutes}m ${seconds}s"
+    else
+        output="${seconds}s"
+    fi
+    
+    echo "$output"
+}
+
+# Helper function just for Wicens duration
+wicens_format_duration() {
+    local total_seconds=$1
+    
+    if [ -z "$total_seconds" ] || [ "$total_seconds" -eq 0 ]; then
+        echo "N/A"
+        return
+    fi
     
     local days=$(($total_seconds / 86400))
     local hours=$((($total_seconds % 86400) / 3600))
@@ -96,13 +129,13 @@ get_client_name() {
      if [ -z "$final_name" ]; then
         name=$(grep -i "$clean_mac" /var/lib/misc/dnsmasq.leases | awk '{print $4}' | head -n 1)
          if [ -n "$name" ] && [ "$name" != "*" ]; then final_name=$(echo "$name" | sed 's/^[ \t]*//;s/[ \t]*$//'); fi
-    fi
+     fi
      if [ -z "$final_name" ]; then
         if echo "$raw_data" | grep -q '>'; then
             parsed_name=$(echo "$raw_data" | awk -F'>' '{print $1}')
             if [ -n "$parsed_name" ] && [ "$parsed_name" != "$clean_mac" ]; then final_name=$(echo "$parsed_name" | sed 's/^[ \t]*//;s/[ \t]*$//'); fi
         fi
-    fi
+     fi
     if [ -z "$final_name" ]; then
         final_name="$clean_mac"
     fi
@@ -118,6 +151,20 @@ init_archive_db() {
     # Always ensure tables exist for immediate use
     sqlite3 "$ARCHIVE_DB_FILE" "CREATE TABLE IF NOT EXISTS daily_usage (mac TEXT, name TEXT, date TEXT, total_bytes INTEGER, PRIMARY KEY(mac, date));"
     sqlite3 "$ARCHIVE_DB_FILE" "CREATE TABLE IF NOT EXISTS connmon_history (date TEXT PRIMARY KEY, avg_ping REAL, avg_jitter REAL, avg_quality REAL);"
+    # --- NEW: Added Wicens table init ---
+    sqlite3 "$ARCHIVE_DB_FILE" "CREATE TABLE IF NOT EXISTS wicens_reboot_history (date TEXT PRIMARY KEY, reboot_count INTEGER);"
+}
+
+# --- NEW: Function to archive today's reboot count ---
+archive_todays_reboots() {
+    local today_date=$(date +%Y-%m-%d)
+    local today_filter_grep=$(date +"%b %d %Y")
+    
+    # FIX: Removed ^ anchor to find date anywhere on line
+    local today_reboot_count=$(grep "$today_filter_grep" "$WICENS_LOG" | grep -c "reboot detected")
+    
+    # Save this number to the persistent database
+    sqlite3 "$ARCHIVE_DB_FILE" "INSERT OR REPLACE INTO wicens_reboot_history (date, reboot_count) VALUES ('$today_date', $today_reboot_count);"
 }
 
 # Function to save daily data to archive
@@ -138,7 +185,7 @@ archive_daily_data() {
         safe_client_name=$(echo "$client_name" | sed "s/'/''/g") # Safe for SQL insert
 
         sqlite3 "$ARCHIVE_DB_FILE" "INSERT OR REPLACE INTO daily_usage (mac, name, date, total_bytes)
-                                     VALUES ('$clean_mac', '$safe_client_name', '$today_date', $total_bytes);"
+                                      VALUES ('$clean_mac', '$safe_client_name', '$today_date', $total_bytes);"
     done
 
     # 2. ConnMon History Archiving (Saves the day's average)
@@ -152,16 +199,18 @@ archive_daily_data() {
         local jitter_avg=$(echo "$CONMON_TODAY_AVG" | cut -d, -f2)
         local quality_avg=$(echo "$CONMON_TODAY_AVG" | cut -d, -f3)
 
-        # Check if ping_avg is a valid number before inserting
         if echo "$ping_avg" | grep -q '^[0-9.]*$'; then
              if [ -z "$ping_avg" ]; then ping_avg=0; fi
              if [ -z "$jitter_avg" ]; then jitter_avg=0; fi
              if [ -z "$quality_avg" ]; then quality_avg=0; fi
 
             sqlite3 "$ARCHIVE_DB_FILE" "INSERT OR REPLACE INTO connmon_history (date, avg_ping, avg_jitter, avg_quality)
-                                         VALUES ('$today_date', $ping_avg, $jitter_avg, $quality_avg);"
+                                          VALUES ('$today_date', $ping_avg, $jitter_avg, $quality_avg);"
         fi
     fi
+    
+    # --- NEW: Archive today's wicens reboot count ---
+    archive_todays_reboots
 }
 
 # Function to build Top 5 Users list from Live DB
@@ -187,7 +236,6 @@ build_top_users_from_live_db() {
         done <<EOF
 $query_result
 EOF
-        # Total line removed as requested
     fi
     eval $__result_var="'$list_output'"
 }
@@ -217,7 +265,6 @@ build_top_users_from_archive_db() {
         done <<EOF
 $query_result
 EOF
-        # Total line removed as requested
     fi
     eval $__result_var="'$list_output'"
 }
@@ -267,7 +314,6 @@ EOF
          FROM connmon_history
          WHERE date >= '$start_date'")
 
-    # Check for empty result
     if [ -z "$query_result" ] || [ "$query_result" = ",," ]; then
         eval $__result_var="'$result_output'"
         return
@@ -282,7 +328,6 @@ EOF
         return
     fi
 
-    # Replace empty/null averages with 0 for formatting
     if [ -z "$avg_ping" ]; then avg_ping=0; fi
     if [ -z "$avg_jitter" ]; then avg_jitter=0; fi
     if [ -z "$avg_quality" ]; then avg_quality=0; fi
@@ -301,28 +346,21 @@ get_recent_alerts_summary() {
     local log_file="$ALERT_LOG"
     local output=""
     
-    # Set defaults
     ALERT_COUNT_TODAY=0
-    
     local today_date_filter=$(date +"%Y-%m-%d")
 
     if [ ! -f "$log_file" ]; then
         output="No recent alert log found."
     else
         local todays_alerts=$(grep "^\[${today_date_filter}" "$log_file")
-        local total_alerts=0 # Default to 0
-
-        # --- FIX ---
-        # Only count lines if the grep result is not empty
+        local total_alerts=0
         if [ -n "$todays_alerts" ]; then
             total_alerts=$(echo "$todays_alerts" | wc -l)
         fi
-        # --- END FIX ---
 
         if [ "$total_alerts" -eq 0 ]; then
             output="No ConnMon alerts were triggered today."
         else
-            # Process today's alert lines
             local summary_list=$(echo "$todays_alerts" | awk -F'|' '{
                 gsub(/\[|\]/,"", $1); 
                 split($1, time_parts, " ");
@@ -338,13 +376,130 @@ get_recent_alerts_summary() {
                  output="No valid alerts found for today (or log format issue)."
             else
                  output=$(printf "🚨 %d alert events triggered today:\n%s" "$unique_events" "$summary_list")
-                 ALERT_COUNT_TODAY=$unique_events # Set global alert count
+                 ALERT_COUNT_TODAY=$unique_events
             fi
         fi
     fi
-    # Set the global variable
     ALERT_SUMMARY_TEXT=$(echo "$output" | sed 's/&/&amp;/g; s/</&lt;/g; s/>/&gt;/g')
 }
+
+# --- NEW: Function to get all Wicens data (v8.5) ---
+get_wicens_all_stats() {
+    # Set defaults
+    WAN_CONNECTION_DETAILS="<b>🌐 WAN Connection Details (Wicens)</b>
+<i>Wicens log files not found.</i>"
+    WAN_DISCONNECT_STATS="<b>🔄 WAN Disconnect Stats (Wicens)</b>
+<i>Wicens log files not found.</i>"
+
+    if [ ! -f "$WICENS_LOG" ] || [ ! -f "$WICENS_HISTORY" ]; then
+        return # Exit function if files are missing
+    fi
+
+    # --- 1. Get Connection Details ---
+    local WIC_CURRENT_IP="$IP_WAN0_RAW" # Reuse already fetched IP
+    local WIC_CURRENT_UPTIME="N/A"
+    local WIC_CURRENT_CONN_STR="N/A"
+    
+    local LATEST_INTERNET_UP_LINE=$(grep "appears up" "$WICENS_LOG" | tail -n 1 | strings)
+
+    if [ -n "$LATEST_INTERNET_UP_LINE" ]; then
+        WIC_CURRENT_CONN_STR=$(echo "$LATEST_INTERNET_UP_LINE" | awk '
+            BEGIN {
+              m="Jan 1 Feb 2 Mar 3 Apr 4 May 5 Jun 6 Jul 7 Aug 8 Sep 9 Oct 10 Nov 11 Dec 12";
+              split(m, a, " ");
+              for (i=1; i<=24; i+=2) M[a[i]] = a[i+1];
+            }
+            {
+              printf "%s-%02d-%02d %s", $3, M[$1], $2, $4
+            }
+        ')
+        
+        local UP_TS=$(date -d "$WIC_CURRENT_CONN_STR" +%s 2>/dev/null)
+        if [ -n "$UP_TS" ]; then
+            local NOW_TS=$(date +%s)
+            local DURATION_SEC=$(($NOW_TS - $UP_TS))
+            WIC_CURRENT_UPTIME=$(wicens_format_duration $DURATION_SEC)
+        fi
+    fi
+
+    # --- 2. Get Previous IP Details ---
+    local LAST_IP_ENTRY=$(tail -n 1 "$WICENS_HISTORY" | strings)
+    local WIC_OLD_IP_ADDR="N/A"
+    local WIC_OLD_IP_TIME_ACQUIRED="N/A"
+    local WIC_OLD_IP_LEASE_DURATION="N/A"
+
+    if [ -n "$LAST_IP_ENTRY" ]; then
+        WIC_OLD_IP_ADDR=$(echo "$LAST_IP_ENTRY" | awk '{print $5}')
+        WIC_OLD_IP_TIME_ACQUIRED=$(echo "$LAST_IP_ENTRY" | awk '
+            BEGIN {
+              m="Jan 1 Feb 2 Mar 3 Apr 4 May 5 Jun 6 Jul 7 Aug 8 Sep 9 Oct 10 Nov 11 Dec 12";
+              split(m, a, " ");
+              for (i=1; i<=24; i+=2) M[a[i]] = a[i+1];
+            }
+            {
+              printf "%s-%02d-%02d %s", $3, M[$1], $2, $4
+            }
+        ')
+        WIC_OLD_IP_LEASE_DURATION=$(echo "$LAST_IP_ENTRY" | awk '{printf "%s %s %s %s", $6, $7, $8, $9}')
+    fi
+    
+    # --- 3. Format Connection Details Output ---
+    WAN_CONNECTION_DETAILS=$(cat <<EOF_DETAILS
+<b>🌐 WAN Connection Details (Wicens)</b>
+ ┣ Current IP: $WIC_CURRENT_IP
+ ┣ Uptime: $WIC_CURRENT_UPTIME
+ ┣ Connected Since: $WIC_CURRENT_CONN_STR
+ ┣ Previous IP: $WIC_OLD_IP_ADDR
+ ┣ Previous IP Since: $WIC_OLD_IP_TIME_ACQUIRED
+ ┗ Previous Lease: $WIC_OLD_IP_LEASE_DURATION
+EOF_DETAILS
+)
+
+    # --- 4. Get Disconnect Stats ---
+    local WIC_TODAY_FILTER_GREP=$(date +"%b %d %Y")
+    local WIC_MONTH_FILTER_AWK=$(date +"%b")
+    local WIC_YEAR_FILTER_AWK=$(date +"%Y")
+    local WIC_LABEL_TODAY=$(date +"%b %d")
+    local WIC_LABEL_MONTH=$(date +"%B")
+    local WIC_LABEL_YEAR=$(date +"%Y")
+
+    # --- Get ALL Reboot stats from Archive DB ---
+    local TODAY_DATE_SQL=$(date +%Y-%m-%d)
+    local MONTH_START_SQL=$(date +%Y-%m-01)
+    local YEAR_START_SQL=$(date +%Y-01-01)
+
+    local WIC_REBOOTS_TODAY=$(sqlite3 "$ARCHIVE_DB_FILE" "SELECT reboot_count FROM wicens_reboot_history WHERE date = '$TODAY_DATE_SQL'")
+    local WIC_REBOOTS_MONTH=$(sqlite3 "$ARCHIVE_DB_FILE" "SELECT SUM(reboot_count) FROM wicens_reboot_history WHERE date >= '$MONTH_START_SQL'")
+    local WIC_REBOOTS_YEAR=$(sqlite3 "$ARCHIVE_DB_FILE" "SELECT SUM(reboot_count) FROM wicens_reboot_history WHERE date >= '$YEAR_START_SQL'")
+    local WIC_REBOOTS_LIFETIME=$(sqlite3 "$ARCHIVE_DB_FILE" "SELECT SUM(reboot_count) FROM wicens_reboot_history")
+
+    # Handle NULL/empty results from sqlite
+    if [ -z "$WIC_REBOOTS_TODAY" ]; then WIC_REBOOTS_TODAY=0; fi
+    if [ -z "$WIC_REBOOTS_MONTH" ]; then WIC_REBOOTS_MONTH=0; fi
+    if [ -z "$WIC_REBOOTS_YEAR" ]; then WIC_REBOOTS_YEAR=0; fi
+    if [ -z "$WIC_REBOOTS_LIFETIME" ]; then WIC_REBOOTS_LIFETIME=0; fi
+
+    # --- IP Changes (from persistent log file) ---
+    local WIC_IP_CHANGES_TODAY=$(grep "$WIC_TODAY_FILTER_GREP" "$WICENS_HISTORY" | wc -l)
+    local WIC_IP_CHANGES_MONTH=$(awk -v month="$WIC_MONTH_FILTER_AWK" -v year="$WIC_YEAR_FILTER_AWK" '$1 == month && $3 == year' "$WICENS_HISTORY" | wc -l)
+    local WIC_IP_CHANGES_YEAR=$(awk -v year="$WIC_YEAR_FILTER_AWK" '$3 == year' "$WICENS_HISTORY" | wc -l)
+    local WIC_IP_CHANGES_LIFETIME=$(wc -l < "$WICENS_HISTORY")
+
+    # --- 5. Format Disconnect Stats Output (Clean List Format) ---
+    WAN_DISCONNECT_STATS=$(cat <<TABLE_EOF
+<b>🔄 WAN Disconnect Stats (Wicens)</b>
+ ┣ Reboots Today ($WIC_LABEL_TODAY): $WIC_REBOOTS_TODAY
+ ┣ Reboots Month ($WIC_LABEL_MONTH): $WIC_REBOOTS_MONTH
+ ┣ Reboots Year ($WIC_LABEL_YEAR): $WIC_REBOOTS_YEAR
+ ┣ Reboots Lifetime: $WIC_REBOOTS_LIFETIME
+ ┣ IP Changes Today ($WIC_LABEL_TODAY): $WIC_IP_CHANGES_TODAY
+ ┣ IP Changes Month ($WIC_LABEL_MONTH): $WIC_IP_CHANGES_MONTH
+ ┣ IP Changes Year ($WIC_LABEL_YEAR): $WIC_IP_CHANGES_YEAR
+ ┗ IP Changes Lifetime: $WIC_IP_CHANGES_LIFETIME
+TABLE_EOF
+)
+}
+# --- END NEW FUNCTION ---
 
 
 # --- Main Logic Starts Here ---
@@ -382,7 +537,7 @@ RAM_USED_PERCENTAGE=$(free | grep Mem | awk '{ printf("%.2f", $3/$2 * 100.0) }')
 RAM_FREE_PERCENTAGE=$(free | grep Mem | awk '{ printf("%.2f", $4/$2 * 100.0) }')
 SWAP_USED=$(free | grep Swap | awk '{ if ($2 > 0) { printf("%.2f", $3/$2 * 100.0) } else { print "0.00" } }')
 LOAD_AVG=$(cat /proc/loadavg | awk '{printf "1 min: %.2f%% 5 mins: %.2f%% 15 mins: %.2f%%", $1, $2, $3}')
-AVERAGE_PING=$(ping -c 10 1.1.1.1 | tail -n 1 | awk -F'/' '{print $5}')
+# AVERAGE_PING variable removed
 
 # Get vnStat data usage
 DAILY_USAGE=$(vnstat -i ppp0 -d --dbdir /opt/var/lib/vnstat | grep "$(date +'%Y-%m-%d')" | awk '{print $8, $9}')
@@ -422,6 +577,10 @@ get_connmon_history '1970-01-01' CONMON_LIFETIME_AVG
 
 # Alert Summary Retrieval (Sets $ALERT_SUMMARY_TEXT and $ALERT_COUNT_TODAY)
 get_recent_alerts_summary
+
+# --- NEW: Call function to get all Wicens data ---
+get_wicens_all_stats
+# --- END NEW ---
 
 
 # --- Generate Top Users Lists ---
@@ -467,20 +626,14 @@ function sendMessage()
     # --- DYNAMIC BANNER LOGIC (v1.2 - Clean Summary) ---
     local headline=""
     
-    # $ALERT_COUNT_TODAY is a global variable set by get_recent_alerts_summary
     if [ "$ALERT_COUNT_TODAY" -gt 0 ]; then
-        # Priority 1: Alerts were found.
         headline=$(printf "🚨 Status: ALERT (%d events)" "$ALERT_COUNT_TODAY")
-        
     elif [ "$TEMP_CPU" -gt "$LIMIT_TEMP_CPU" ]; then
-        # Priority 2: High CPU Temp
         headline=$(printf "🔥 Status: HIGH CPU (%sº)" "$TEMP_CPU")
     else
-        # Priority 3: All Clear
         headline="❄️ Status: ALL CLEAR"
     fi
     
-    # Assemble the final banner with key datapoints
     BANNER=$(printf "<b>%s</b>\nCPU: <code>%sº</code> | Ping: <code>%s ms</code> | Daily: <code>%s</code>" \
         "$headline" \
         "${TEMP_CPU:-N/A}" \
@@ -517,6 +670,10 @@ Avg. Quality: $CONMON_QUALITY %
  ┣ This Year Avg.: $CONMON_YEAR_AVG
  ┗ Lifetime Avg.: $CONMON_LIFETIME_AVG
 
+$WAN_CONNECTION_DETAILS
+
+$WAN_DISCONNECT_STATS
+
 <b>📅 Total Data Usage (vnStat)</b>
 Daily Data Usage ($TODAY_TITLE_DATE): $DAILY_USAGE_DECIMAL
 Monthly Data Usage ($MONTH_TITLE_DATE): $MONTHLY_USAGE_DECIMAL
@@ -529,9 +686,6 @@ $TOP_USERS_MONTH_LIST
 $TOP_USERS_YEAR_LIST
 
 $TOP_USERS_LIFE_LIST
-
-<b>📶 Ping</b>
-Average Ping: $AVERAGE_PING
 
 <b>📃 Info</b>
 📶 Model: $MODEL_NAME
@@ -556,3 +710,4 @@ EOF
 
 # --- Final Execution ---
 sendMessage
+
