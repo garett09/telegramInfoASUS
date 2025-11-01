@@ -269,6 +269,35 @@ EOF
     eval $__result_var="'$list_output'"
 }
 
+# --- NEW: Function to build Top 10 Users list from Archive DB ---
+build_top_10_users_from_archive_db() {
+    local title="$1"
+    local where_clause="$2"
+    local __result_var=$3
+    local list_output="<b>$title</b>"
+
+    query_result=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+        "SELECT name, SUM(total_bytes)
+         FROM daily_usage
+         $where_clause
+         GROUP BY mac, name
+         ORDER BY SUM(total_bytes) DESC
+         LIMIT 10") # Changed to LIMIT 10
+
+    if [ -z "$query_result" ]; then
+        list_output=$(printf "%s\n<i>No archived data yet.</i>" "$list_output")
+    else
+        while IFS=',' read -r client_name total_bytes; do
+            safe_client_name=$(echo "$client_name" | sed 's/&/&amp;/g; s/</&lt;/g; s/>/&gt;/g')
+            total_human=$(bytes_to_human $total_bytes)
+            list_output=$(printf "%s\n- %s: %s" "$list_output" "$safe_client_name" "$total_human")
+        done <<EOF
+$query_result
+EOF
+    fi
+    eval $__result_var="'$list_output'"
+}
+
 # Function to get ConnMon Hourly Average
 get_conmon_hourly_stats() {
     local db_file=$1
@@ -599,7 +628,7 @@ if [ ! -f "$LIVE_DB_FILE" ]; then
 <i>Traffic DB not found.</i>"
     TOP_USERS_YEAR_LIST="<b>🗓️ Top 5 Users (This Year)</b>
 <i>Traffic DB not found.</i>"
-    TOP_USERS_LIFE_LIST="<b>🌍 Top 5 Users (Lifetime)</b>
+    TOP_10_USERS_LIFE_LIST="<b>🌍 Top 10 Users (Lifetime)</b>
 <i>Traffic DB not found.</i>"
 else
     # Save today's data to archives
@@ -614,7 +643,8 @@ else
     build_top_users_from_live_db "🏆 Top 5 Users ($TODAY_TITLE_DATE)" "WHERE timestamp >= $MIDNIGHT_TODAY" TOP_USERS_TODAY_LIST
     build_top_users_from_live_db "📅 Top 5 Users ($MONTH_TITLE_DATE)" "WHERE timestamp >= $MIDNIGHT_MONTH" TOP_USERS_MONTH_LIST
     build_top_users_from_archive_db "🗓️ Top 5 Users ($YEAR_TITLE_DATE)" "WHERE date >= '$YEAR_START_DATE'" TOP_USERS_YEAR_LIST
-    build_top_users_from_archive_db "🌍 Top 5 Users (Lifetime)" "" TOP_USERS_LIFE_LIST
+    # --- NEW: Get Top 10 users for lifetime ---
+    build_top_10_users_from_archive_db "🌍 Top 10 Users (Lifetime)" "" TOP_10_USERS_LIFE_LIST
 fi
 
 ## Telegram
@@ -692,7 +722,7 @@ $TOP_USERS_MONTH_LIST
 
 $TOP_USERS_YEAR_LIST
 
-$TOP_USERS_LIFE_LIST
+$TOP_10_USERS_LIFE_LIST
 
 <b>📃 Info</b>
 📶 Model: $MODEL_NAME
