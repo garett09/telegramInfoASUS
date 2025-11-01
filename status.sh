@@ -185,7 +185,7 @@ archive_daily_data() {
         safe_client_name=$(echo "$client_name" | sed "s/'/''/g") # Safe for SQL insert
 
         sqlite3 "$ARCHIVE_DB_FILE" "INSERT OR REPLACE INTO daily_usage (mac, name, date, total_bytes)
-                                      VALUES ('$clean_mac', '$safe_client_name', '$today_date', $total_bytes);"
+                                         VALUES ('$clean_mac', '$safe_client_name', '$today_date', $total_bytes);"
     done
 
     # 2. ConnMon History Archiving (Saves the day's average)
@@ -205,7 +205,7 @@ archive_daily_data() {
              if [ -z "$quality_avg" ]; then quality_avg=0; fi
 
             sqlite3 "$ARCHIVE_DB_FILE" "INSERT OR REPLACE INTO connmon_history (date, avg_ping, avg_jitter, avg_quality)
-                                          VALUES ('$today_date', $ping_avg, $jitter_avg, $quality_avg);"
+                                               VALUES ('$today_date', $ping_avg, $jitter_avg, $quality_avg);"
         fi
     fi
     
@@ -400,7 +400,8 @@ get_wicens_all_stats() {
     local WIC_CURRENT_UPTIME="N/A"
     local WIC_CURRENT_CONN_STR="N/A"
     
-    local LATEST_INTERNET_UP_LINE=$(grep "appears up" "$WICENS_LOG" | tail -n 1 | strings)
+    # --- FIX 1: Filter out 'cron' to find the real connection event ---
+    local LATEST_INTERNET_UP_LINE=$(grep "appears up" "$WICENS_LOG" | grep -v "cron" | tail -n 1 | strings)
 
     if [ -n "$LATEST_INTERNET_UP_LINE" ]; then
         WIC_CURRENT_CONN_STR=$(echo "$LATEST_INTERNET_UP_LINE" | awk '
@@ -480,10 +481,11 @@ EOF_DETAILS
     if [ -z "$WIC_REBOOTS_LIFETIME" ]; then WIC_REBOOTS_LIFETIME=0; fi
 
     # --- IP Changes (from persistent log file) ---
-    local WIC_IP_CHANGES_TODAY=$(grep "$WIC_TODAY_FILTER_GREP" "$WICENS_HISTORY" | wc -l)
-    local WIC_IP_CHANGES_MONTH=$(awk -v month="$WIC_MONTH_FILTER_AWK" -v year="$WIC_YEAR_FILTER_AWK" '$1 == month && $3 == year' "$WICENS_HISTORY" | wc -l)
-    local WIC_IP_CHANGES_YEAR=$(awk -v year="$WIC_YEAR_FILTER_AWK" '$3 == year' "$WICENS_HISTORY" | wc -l)
-    local WIC_IP_CHANGES_LIFETIME=$(wc -l < "$WICENS_HISTORY")
+    # --- FIX 2 & 3: Read all IP changes from the live log for consistency ---
+    local WIC_IP_CHANGES_TODAY=$(grep "$WIC_TODAY_FILTER_GREP" "$WICENS_LOG" | grep -c "WAN IP has changed")
+    local WIC_IP_CHANGES_MONTH=$(awk -v month="$WIC_MONTH_FILTER_AWK" -v year="$WIC_YEAR_FILTER_AWK" '$1 == month && $3 == year' "$WICENS_LOG" | grep -c "WAN IP has changed")
+    local WIC_IP_CHANGES_YEAR=$(awk -v year="$WIC_YEAR_FILTER_AWK" '$3 == year' "$WICENS_LOG" | grep -c "WAN IP has changed")
+    local WIC_IP_CHANGES_LIFETIME=$(grep -c "WAN IP has changed" "$WICENS_LOG")
 
     # --- 5. Format Disconnect Stats Output (Clean List Format) ---
     WAN_DISCONNECT_STATS=$(cat <<TABLE_EOF
@@ -710,4 +712,3 @@ EOF
 
 # --- Final Execution ---
 sendMessage
-
