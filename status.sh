@@ -571,6 +571,11 @@ CONMON_PING=$(echo "$CONMON_DATA" | cut -d, -f2)
 CONMON_JITTER=$(echo "$CONMON_DATA" | cut -d, -f3)
 CONMON_QUALITY=$(echo "$CONMON_DATA" | cut -d, -f4)
 
+# --- NEW: Define Date Labels for ConnMon History ---
+LABEL_DATE_7DAY="($(date -d @$(($(date +%s) - 518400)) +"%b %d") - $(date +"%b %d"))"
+LABEL_DATE_MONTH="($(date +"%B"))"
+LABEL_DATE_YEAR="($(date +"%Y"))"
+
 # ConnMon Historical Data Retrieval
 get_connmon_history '-7 day' CONMON_WEEK_AVG
 get_connmon_history 'start of month' CONMON_MONTH_AVG
@@ -667,10 +672,10 @@ Avg. Jitter: $CONMON_JITTER ms
 Avg. Quality: $CONMON_QUALITY %
 
 <b>📊 Historical ConnMon Averages</b>
- ┣ Last 7 Days Avg.: $CONMON_WEEK_AVG
- ┣ This Month Avg.: $CONMON_MONTH_AVG
- ┣ This Year Avg.: $CONMON_YEAR_AVG
- ┗ Lifetime Avg.: $CONMON_LIFETIME_AVG
+ ┣ Last 7 Days $LABEL_DATE_7DAY: $CONMON_WEEK_AVG
+ ┣ This Month $LABEL_DATE_MONTH: $CONMON_MONTH_AVG
+ ┣ This Year $LABEL_DATE_YEAR: $CONMON_YEAR_AVG
+ ┗ All-Time Avg.: $CONMON_LIFETIME_AVG
 
 $WAN_CONNECTION_DETAILS
 
