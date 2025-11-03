@@ -126,16 +126,16 @@ get_client_name() {
         name=$(nvram get dhcp_staticlist | tr '>' '\n' | grep -i "$clean_mac" | awk -F'<' '{print $3}' | head -n 1)
         if [ -n "$name" ] && [ "$name" != "*" ]; then final_name=$(echo "$name" | sed 's/^[ \t]*//;s/[ \t]*$//'); fi
     fi
-     if [ -z "$final_name" ]; then
+      if [ -z "$final_name" ]; then
         name=$(grep -i "$clean_mac" /var/lib/misc/dnsmasq.leases | awk '{print $4}' | head -n 1)
-         if [ -n "$name" ] && [ "$name" != "*" ]; then final_name=$(echo "$name" | sed 's/^[ \t]*//;s/[ \t]*$//'); fi
-     fi
-     if [ -z "$final_name" ]; then
+          if [ -n "$name" ] && [ "$name" != "*" ]; then final_name=$(echo "$name" | sed 's/^[ \t]*//;s/[ \t]*$//'); fi
+      fi
+      if [ -z "$final_name" ]; then
         if echo "$raw_data" | grep -q '>'; then
             parsed_name=$(echo "$raw_data" | awk -F'>' '{print $1}')
             if [ -n "$parsed_name" ] && [ "$parsed_name" != "$clean_mac" ]; then final_name=$(echo "$parsed_name" | sed 's/^[ \t]*//;s/[ \t]*$//'); fi
         fi
-     fi
+      fi
     if [ -z "$final_name" ]; then
         final_name="$clean_mac"
     fi
@@ -175,9 +175,9 @@ archive_daily_data() {
     # 1. Traffic Analyzer Archiving
     sqlite3 -separator ',' "$LIVE_DB_FILE" \
         "SELECT mac, SUM(rx) + SUM(tx) AS total
-         FROM traffic
-         WHERE timestamp >= $midnight_today
-         GROUP BY mac" | \
+          FROM traffic
+          WHERE timestamp >= $midnight_today
+          GROUP BY mac" | \
     while IFS=',' read -r db_entry total_bytes; do
         clean_mac=$(extract_mac "$db_entry")
         if [ -z "$clean_mac" ]; then continue; fi
@@ -185,14 +185,14 @@ archive_daily_data() {
         safe_client_name=$(echo "$client_name" | sed "s/'/''/g") # Safe for SQL insert
 
         sqlite3 "$ARCHIVE_DB_FILE" "INSERT OR REPLACE INTO daily_usage (mac, name, date, total_bytes)
-                                         VALUES ('$clean_mac', '$safe_client_name', '$today_date', $total_bytes);"
+                                             VALUES ('$clean_mac', '$safe_client_name', '$today_date', $total_bytes);"
     done
 
     # 2. ConnMon History Archiving (Saves the day's average)
     local CONMON_TODAY_AVG=$(sqlite3 -separator ',' "$CONMON_DB" \
         "SELECT AVG(Ping), AVG(Jitter), AVG(LineQuality)
-         FROM connstats
-         WHERE Timestamp >= $midnight_today")
+          FROM connstats
+          WHERE Timestamp >= $midnight_today")
 
     if [ -n "$CONMON_TODAY_AVG" ] && [ "$CONMON_TODAY_AVG" != ",," ]; then
         local ping_avg=$(echo "$CONMON_TODAY_AVG" | cut -d, -f1)
@@ -204,7 +204,7 @@ archive_daily_data() {
              if [ -z "$jitter_avg" ]; then jitter_avg=0; fi
              if [ -z "$quality_avg" ]; then quality_avg=0; fi
 
-            sqlite3 "$ARCHIVE_DB_FILE" "INSERT OR REPLACE INTO connmon_history (date, avg_ping, avg_jitter, avg_quality)
+             sqlite3 "$ARCHIVE_DB_FILE" "INSERT OR REPLACE INTO connmon_history (date, avg_ping, avg_jitter, avg_quality)
                                                VALUES ('$today_date', $ping_avg, $jitter_avg, $quality_avg);"
         fi
     fi
@@ -222,8 +222,8 @@ build_top_users_from_live_db() {
 
     query_result=$(sqlite3 -separator ',' "$LIVE_DB_FILE" \
         "SELECT mac, SUM(rx) + SUM(tx) AS total
-         FROM traffic $where_clause
-         GROUP BY mac ORDER BY total DESC LIMIT 5")
+          FROM traffic $where_clause
+          GROUP BY mac ORDER BY total DESC LIMIT 5")
 
     if [ -z "$query_result" ]; then
         list_output=$(printf "%s\n<i>No data for this period.</i>" "$list_output")
@@ -249,11 +249,11 @@ build_top_users_from_archive_db() {
 
     query_result=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
         "SELECT name, SUM(total_bytes)
-         FROM daily_usage
-         $where_clause
-         GROUP BY mac, name
-         ORDER BY SUM(total_bytes) DESC
-         LIMIT 5")
+          FROM daily_usage
+          $where_clause
+          GROUP BY mac, name
+          ORDER BY SUM(total_bytes) DESC
+          LIMIT 5")
 
     if [ -z "$query_result" ]; then
         list_output=$(printf "%s\n<i>No archived data yet.</i>" "$list_output")
@@ -278,11 +278,11 @@ build_top_10_users_from_archive_db() {
 
     query_result=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
         "SELECT name, SUM(total_bytes)
-         FROM daily_usage
-         $where_clause
-         GROUP BY mac, name
-         ORDER BY SUM(total_bytes) DESC
-         LIMIT 10") # Changed to LIMIT 10
+          FROM daily_usage
+          $where_clause
+          GROUP BY mac, name
+          ORDER BY SUM(total_bytes) DESC
+          LIMIT 10") # Changed to LIMIT 10
 
     if [ -z "$query_result" ]; then
         list_output=$(printf "%s\n<i>No archived data yet.</i>" "$list_output")
@@ -315,8 +315,8 @@ EOF
     if [ -z "$start_ts" ] || [ -z "$end_ts" ]; then echo "N/A,N/A,N/A,N/A"; return; fi
     local metrics_raw=$(sqlite3 -separator ',' "$db_file" \
         "SELECT AVG(Ping), AVG(Jitter), AVG(LineQuality)
-         FROM connstats
-         WHERE Timestamp >= $start_ts AND Timestamp < $end_ts")
+          FROM connstats
+          WHERE Timestamp >= $start_ts AND Timestamp < $end_ts")
     if [ -z "$metrics_raw" ] || [ "$metrics_raw" = ",," ]; then echo "N/A,N/A,N/A,N/A"; return; fi
     local report_time_start=$(date -d "@$start_ts" +"%H:%M")
     local report_time_end=$(date -d "@$end_ts" +"%H:%M")
@@ -340,8 +340,8 @@ EOF
 
     local query_result=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
         "SELECT AVG(avg_ping), AVG(avg_jitter), AVG(avg_quality)
-         FROM connmon_history
-         WHERE date >= '$start_date'")
+          FROM connmon_history
+          WHERE date >= '$start_date'")
 
     if [ -z "$query_result" ] || [ "$query_result" = ",," ]; then
         eval $__result_var="'$result_output'"
@@ -381,6 +381,7 @@ get_recent_alerts_summary() {
     if [ ! -f "$log_file" ]; then
         output="No recent alert log found."
     else
+        # Only grab lines for today
         local todays_alerts=$(grep "^\[${today_date_filter}" "$log_file")
         local total_alerts=0
         if [ -n "$todays_alerts" ]; then
@@ -390,22 +391,44 @@ get_recent_alerts_summary() {
         if [ "$total_alerts" -eq 0 ]; then
             output="No ConnMon alerts were triggered today."
         else
+            # --- CORRECTED AWK COMMAND to use field 4 for ALERT messages ---
             local summary_list=$(echo "$todays_alerts" | awk -F'|' '{
                 gsub(/\[|\]/,"", $1); 
                 split($1, time_parts, " ");
                 gsub(/ /,"", $2); 
-                gsub(/^[ \t]+|[ \t]+$/, "", $3);
-                gsub(/; /, ", ", $3); 
-                printf " - %s (%s issues): %s\n", time_parts[2], $2, $3; 
+                
+                # RECOVERY LOGIC (Uses field $4 for resolved message)
+                if ($2 == "RECOVERY") {
+                    # Take the full message from field 4
+                    detail_msg = $4;
+                    gsub(/^[ \t]+|[ \t]+$/, "", detail_msg);
+                    printf " - %s (%s): %s\n", time_parts[2], $2, detail_msg; 
+                } 
+                # ALERT LOGIC (Uses field $4 for detail message and field $3 for count)
+                else if ($2 == "ALERT") {
+                    # Take the alert count from field 3, and message detail from field 4
+                    count = $3;
+                    gsub(/^[ \t]+|[ \t]+$/, "", count);
+                    detail_msg = $4;
+                    gsub(/^[ \t]+|[ \t]+$/, "", detail_msg);
+                    # ALERT messages should use the word "issue(s)"
+                    printf " - %s (%s %s): %s\n", time_parts[2], $2, (count == "1" ? count " issue" : count " issues"), detail_msg; 
+                }
             }' | sort -r | uniq)
+            # --- END CORRECTED AWK COMMAND ---
             
-            local unique_events=$(echo "$summary_list" | grep -c 'issues)') 
+            local unique_events=$(echo "$summary_list" | grep -c 'issues\|RECOVERY)') 
 
             if [ "$unique_events" -eq 0 ]; then
-                 output="No valid alerts found for today (or log format issue)."
+                output="No valid alerts found for today (or log format issue)."
             else
-                 output=$(printf "🚨 %d alert events triggered today:\n%s" "$unique_events" "$summary_list")
-                 ALERT_COUNT_TODAY=$unique_events
+                output=$(printf "🚨 %d alert events triggered today:\n%s" "$unique_events" "$summary_list")
+                # Count the number of unique ALERT lines for the banner headline
+                ALERT_COUNT_TODAY=$(echo "$todays_alerts" | grep "ALERT" | awk '{print $1"|"$2"|"$3}' | sort | uniq | wc -l)
+                if [ "$ALERT_COUNT_TODAY" -eq 0 ]; then
+                    # Fallback for the banner if only recovery events exist
+                    ALERT_COUNT_TODAY=$(echo "$todays_alerts" | grep "RECOVERY" | wc -l)
+                fi
             fi
         fi
     fi
