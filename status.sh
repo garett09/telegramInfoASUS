@@ -3,7 +3,7 @@ export PATH="/bin:/usr/bin:/sbin:/usr/sbin:/opt/bin:/opt/sbin"
 
 #
 # Dev: garett09
-# version: 8.6 (FINAL - Removed old Ping)
+# version: 9.0 (FINAL - Removed old Ping)
 # - Integrated Wicens DB archiving for reboots.
 # - Moved Wicens sections for clarity.
 # - Removed redundant Ping section (covered by ConnMon)
@@ -36,10 +36,13 @@ format_uptime() {
     # Read the total uptime in seconds from /proc/uptime
     local total_seconds=$(cat /proc/uptime | awk '{print $1}' | cut -d. -f1)
     
-    local days=$(($total_seconds / 86400))
-    local hours=$((($total_seconds % 86400) / 3600))
-    local minutes=$((($total_seconds % 3600) / 60))
-    local seconds=$(($total_seconds % 60))
+    # Strip leading zeros if present (for small numbers) but don't use 10# for large numbers
+    total_seconds=$(echo "$total_seconds" | sed 's/^0*//')
+    if [ -z "$total_seconds" ]; then total_seconds=0; fi
+    local days=$((total_seconds / 86400))
+    local hours=$(((total_seconds % 86400) / 3600))
+    local minutes=$(((total_seconds % 3600) / 60))
+    local seconds=$((total_seconds % 60))
     
     local output=""
     
@@ -60,15 +63,18 @@ format_uptime() {
 wicens_format_duration() {
     local total_seconds=$1
     
+    # Strip leading zeros first before any comparisons
+    total_seconds=$(echo "$total_seconds" | sed 's/^0*//')
+    if [ -z "$total_seconds" ]; then total_seconds=0; fi
+    
     if [ -z "$total_seconds" ] || [ "$total_seconds" -eq 0 ]; then
         echo "N/A"
         return
     fi
-    
-    local days=$(($total_seconds / 86400))
-    local hours=$((($total_seconds % 86400) / 3600))
-    local minutes=$((($total_seconds % 3600) / 60))
-    local seconds=$(($total_seconds % 60))
+    local days=$((total_seconds / 86400))
+    local hours=$(((total_seconds % 86400) / 3600))
+    local minutes=$(((total_seconds % 3600) / 60))
+    local seconds=$((total_seconds % 60))
     
     local output=""
     
@@ -164,23 +170,220 @@ get_client_name() {
 }
 
 # Function to create/ensure archive DB and tables exist
+# Schema is optimized for advanced statistics queries with proper indexes
 init_archive_db() {
     if [ ! -f "$ARCHIVE_DB_FILE" ]; then
         echo "Creating new user archive database..."
     fi
-    # Always ensure tables exist for immediate use
-    sqlite3 "$ARCHIVE_DB_FILE" "CREATE TABLE IF NOT EXISTS daily_usage (mac TEXT, name TEXT, date TEXT, total_bytes INTEGER, PRIMARY KEY(mac, date));"
-    sqlite3 "$ARCHIVE_DB_FILE" "CREATE TABLE IF NOT EXISTS connmon_history (date TEXT PRIMARY KEY, avg_ping REAL, avg_jitter REAL, avg_quality REAL);"
-    # --- NEW: Added Wicens table init ---
-    sqlite3 "$ARCHIVE_DB_FILE" "CREATE TABLE IF NOT EXISTS wicens_reboot_history (date TEXT PRIMARY KEY, reboot_count INTEGER);"
-    # --- NEW: Device connection details table ---
-    sqlite3 "$ARCHIVE_DB_FILE" "CREATE TABLE IF NOT EXISTS device_connections (mac TEXT, ip TEXT, last_seen_timestamp INTEGER, connection_method TEXT, connection_duration_seconds INTEGER, date TEXT, PRIMARY KEY(mac, date));"
-    # --- NEW: Hourly usage patterns table ---
-    sqlite3 "$ARCHIVE_DB_FILE" "CREATE TABLE IF NOT EXISTS hourly_usage_patterns (date TEXT, hour INTEGER, total_bytes INTEGER, device_count INTEGER, PRIMARY KEY(date, hour));"
-    # --- NEW: Device session statistics table ---
-    sqlite3 "$ARCHIVE_DB_FILE" "CREATE TABLE IF NOT EXISTS device_session_stats (mac TEXT, date TEXT, avg_session_duration INTEGER, reconnection_count INTEGER, total_connection_time INTEGER, PRIMARY KEY(mac, date));"
-    # --- NEW: ConnMon quality patterns table ---
-    sqlite3 "$ARCHIVE_DB_FILE" "CREATE TABLE IF NOT EXISTS connmon_quality_patterns (date TEXT, hour INTEGER, avg_quality REAL, avg_ping REAL, avg_jitter REAL, PRIMARY KEY(date, hour));"
+    
+    # --- Core Tables ---
+    # Daily usage per device (aggregated from TrafficAnalyzer)
+    sqlite3 "$ARCHIVE_DB_FILE" "CREATE TABLE IF NOT EXISTS daily_usage (
+        mac TEXT NOT NULL,
+        name TEXT,
+        date TEXT NOT NULL,
+        total_bytes INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(mac, date)
+    );" 2>/dev/null
+    
+    # ConnMon daily averages (aggregated from minute-by-minute data)
+    sqlite3 "$ARCHIVE_DB_FILE" "CREATE TABLE IF NOT EXISTS connmon_history (
+        date TEXT PRIMARY KEY NOT NULL,
+        avg_ping REAL,
+        avg_jitter REAL,
+        avg_quality REAL
+    );" 2>/dev/null
+    
+    # --- Wicens Tables ---
+    # Wicens reboot history (archived daily)
+    sqlite3 "$ARCHIVE_DB_FILE" "CREATE TABLE IF NOT EXISTS wicens_reboot_history (
+        date TEXT PRIMARY KEY NOT NULL,
+        reboot_count INTEGER NOT NULL DEFAULT 0
+    );" 2>/dev/null
+    
+    # --- Device Connection Tables ---
+    # Device connection details (IP, method, duration, etc.)
+    sqlite3 "$ARCHIVE_DB_FILE" "CREATE TABLE IF NOT EXISTS device_connections (
+        mac TEXT NOT NULL,
+        ip TEXT,
+        last_seen_timestamp INTEGER,
+        connection_method TEXT,
+        connection_duration_seconds INTEGER,
+        date TEXT NOT NULL,
+        PRIMARY KEY(mac, date)
+    );" 2>/dev/null
+    
+    # Device session statistics (reconnections, session duration)
+    sqlite3 "$ARCHIVE_DB_FILE" "CREATE TABLE IF NOT EXISTS device_session_stats (
+        mac TEXT NOT NULL,
+        date TEXT NOT NULL,
+        avg_session_duration INTEGER,
+        reconnection_count INTEGER,
+        total_connection_time INTEGER,
+        PRIMARY KEY(mac, date)
+    );" 2>/dev/null
+    
+    # --- Hourly Pattern Tables (for Advanced Statistics) ---
+    # Hourly usage patterns (used by Network Load Factor and Hourly Data Rate)
+    sqlite3 "$ARCHIVE_DB_FILE" "CREATE TABLE IF NOT EXISTS hourly_usage_patterns (
+        date TEXT NOT NULL,
+        hour INTEGER NOT NULL CHECK(hour >= 0 AND hour <= 23),
+        total_bytes INTEGER NOT NULL DEFAULT 0,
+        device_count INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(date, hour)
+    );" 2>/dev/null
+    
+    # ConnMon quality patterns per hour (used by Ping/Jitter Stats)
+    sqlite3 "$ARCHIVE_DB_FILE" "CREATE TABLE IF NOT EXISTS connmon_quality_patterns (
+        date TEXT NOT NULL,
+        hour INTEGER NOT NULL CHECK(hour >= 0 AND hour <= 23),
+        avg_quality REAL,
+        avg_ping REAL,
+        avg_jitter REAL,
+        PRIMARY KEY(date, hour)
+    );" 2>/dev/null
+    
+    # --- Advanced Statistics Daily Table ---
+    # Daily calculated statistics for 7-day averaging
+    sqlite3 "$ARCHIVE_DB_FILE" "CREATE TABLE IF NOT EXISTS advanced_statistics_daily (
+        date TEXT PRIMARY KEY NOT NULL,
+        quality_distribution_excellent INTEGER,
+        quality_distribution_good INTEGER,
+        quality_distribution_poor INTEGER,
+        bandwidth_efficiency_pct REAL,
+        connection_stability_score REAL,
+        quality_consistency REAL,
+        worst_quality_hour INTEGER,
+        active_hours_count INTEGER,
+        usage_variance REAL,
+        peak_offpeak_ratio REAL,
+        connection_reliability_pct REAL,
+        ping_consistency REAL,
+        jitter_consistency REAL
+    );" 2>/dev/null
+    
+    # --- Weekly Aggregation Tables (for Advanced Statistics) ---
+    # Weekly averages (7-day and 30-day rolling averages for comparisons)
+    sqlite3 "$ARCHIVE_DB_FILE" "CREATE TABLE IF NOT EXISTS weekly_averages (
+        date TEXT PRIMARY KEY NOT NULL,
+        avg_bytes_7d INTEGER,
+        avg_ping_7d REAL,
+        avg_jitter_7d REAL,
+        quality_dist_excellent_7d REAL,
+        quality_dist_good_7d REAL,
+        quality_dist_poor_7d REAL,
+        bandwidth_efficiency_7d REAL,
+        connection_stability_7d REAL,
+        quality_consistency_7d REAL,
+        active_hours_7d REAL,
+        usage_variance_7d REAL,
+        peak_offpeak_ratio_7d REAL,
+        connection_reliability_7d REAL,
+        ping_consistency_7d REAL,
+        jitter_consistency_7d REAL,
+        avg_bytes_30d INTEGER,
+        avg_ping_30d REAL,
+        avg_jitter_30d REAL,
+        quality_dist_excellent_30d REAL,
+        quality_dist_good_30d REAL,
+        quality_dist_poor_30d REAL,
+        bandwidth_efficiency_30d REAL,
+        connection_stability_30d REAL,
+        quality_consistency_30d REAL,
+        active_hours_30d REAL,
+        usage_variance_30d REAL,
+        peak_offpeak_ratio_30d REAL,
+        connection_reliability_30d REAL,
+        ping_consistency_30d REAL,
+        jitter_consistency_30d REAL,
+        avg_bytes_90d INTEGER,
+        avg_ping_90d REAL,
+        avg_jitter_90d REAL,
+        quality_dist_excellent_90d REAL,
+        quality_dist_good_90d REAL,
+        quality_dist_poor_90d REAL,
+        bandwidth_efficiency_90d REAL,
+        connection_stability_90d REAL,
+        quality_consistency_90d REAL,
+        active_hours_90d REAL,
+        usage_variance_90d REAL,
+        peak_offpeak_ratio_90d REAL,
+        connection_reliability_90d REAL,
+        ping_consistency_90d REAL,
+        jitter_consistency_90d REAL
+    );" 2>/dev/null
+    
+    # --- Migration: Add columns to existing tables (for backward compatibility) ---
+    # Note: These ALTER TABLE statements will fail silently if columns already exist (2>/dev/null)
+    # This ensures existing databases get the new columns without breaking
+    # New databases will have all columns from CREATE TABLE above, so these are just for migration
+    
+    # Add 7-day advanced statistics columns (if missing from older schema)
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN quality_dist_excellent_7d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN quality_dist_good_7d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN quality_dist_poor_7d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN bandwidth_efficiency_7d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN connection_stability_7d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN quality_consistency_7d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN active_hours_7d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN usage_variance_7d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN peak_offpeak_ratio_7d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN connection_reliability_7d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN ping_consistency_7d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN jitter_consistency_7d REAL;" 2>/dev/null
+    
+    # Add 30-day trend columns (for migration to support 30-day averages)
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN avg_bytes_30d INTEGER;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN avg_ping_30d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN avg_jitter_30d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN quality_dist_excellent_30d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN quality_dist_good_30d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN quality_dist_poor_30d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN bandwidth_efficiency_30d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN connection_stability_30d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN quality_consistency_30d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN active_hours_30d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN usage_variance_30d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN peak_offpeak_ratio_30d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN connection_reliability_30d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN ping_consistency_30d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN jitter_consistency_30d REAL;" 2>/dev/null
+    
+    # Add 90-day trend columns (for migration to support 90-day averages)
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN avg_bytes_90d INTEGER;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN avg_ping_90d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN avg_jitter_90d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN quality_dist_excellent_90d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN quality_dist_good_90d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN quality_dist_poor_90d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN bandwidth_efficiency_90d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN connection_stability_90d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN quality_consistency_90d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN active_hours_90d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN usage_variance_90d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN peak_offpeak_ratio_90d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN connection_reliability_90d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN ping_consistency_90d REAL;" 2>/dev/null
+    sqlite3 "$ARCHIVE_DB_FILE" "ALTER TABLE weekly_averages ADD COLUMN jitter_consistency_90d REAL;" 2>/dev/null
+    
+    # --- Performance Indexes (for faster queries) ---
+    # Index on daily_usage.date for date-based queries
+    sqlite3 "$ARCHIVE_DB_FILE" "CREATE INDEX IF NOT EXISTS idx_daily_usage_date ON daily_usage(date);" 2>/dev/null
+    
+    # Index on hourly_usage_patterns.date for date-based queries (used by Network Load Factor)
+    sqlite3 "$ARCHIVE_DB_FILE" "CREATE INDEX IF NOT EXISTS idx_hourly_usage_date ON hourly_usage_patterns(date);" 2>/dev/null
+    
+    # Index on connmon_quality_patterns.date for date-based queries (used by Ping/Jitter Stats)
+    sqlite3 "$ARCHIVE_DB_FILE" "CREATE INDEX IF NOT EXISTS idx_connmon_quality_date ON connmon_quality_patterns(date);" 2>/dev/null
+    
+    # Index on device_connections.date for date-based queries
+    sqlite3 "$ARCHIVE_DB_FILE" "CREATE INDEX IF NOT EXISTS idx_device_connections_date ON device_connections(date);" 2>/dev/null
+    
+    # Index on device_connections.last_seen_timestamp for sorting by recent activity
+    sqlite3 "$ARCHIVE_DB_FILE" "CREATE INDEX IF NOT EXISTS idx_device_connections_timestamp ON device_connections(last_seen_timestamp);" 2>/dev/null
+    
+    # Index on advanced_statistics_daily.date for date-based queries
+    sqlite3 "$ARCHIVE_DB_FILE" "CREATE INDEX IF NOT EXISTS idx_advanced_stats_date ON advanced_statistics_daily(date);" 2>/dev/null
 }
 
 # --- NEW: Function to archive today's reboot count ---
@@ -419,7 +622,7 @@ archive_daily_data() {
     archive_todays_reboots
     
     # --- NEW: Archive device connection details ---
-    archive_device_connections
+    # archive_device_connections
     
     # --- NEW: Archive hourly usage patterns ---
     archive_hourly_usage
@@ -427,8 +630,218 @@ archive_daily_data() {
     # --- NEW: Archive ConnMon quality patterns (hourly) ---
     archive_connmon_quality_patterns
     
+    # --- NEW: Archive weekly averages (7-day history) ---
+    archive_weekly_averages
+    
+    # --- NEW: Archive advanced statistics ---
+    archive_advanced_statistics
+    
     # --- NEW: Calculate and archive device session statistics ---
-    calculate_device_session_stats
+    # calculate_device_session_stats
+}
+
+# --- NEW: Function to calculate and archive weekly averages ---
+archive_weekly_averages() {
+    local today_date=$(date +%Y-%m-%d)
+    
+    if [ ! -f "$ARCHIVE_DB_FILE" ]; then
+        return
+    fi
+    
+    # Calculate 7-day average for Data Usage (Total bytes)
+    # We look at the 7 days PRIOR to today to establish the baseline
+    local avg_bytes_7d=$(sqlite3 "$ARCHIVE_DB_FILE" \
+        "SELECT AVG(total_bytes) FROM daily_usage WHERE date < '$today_date' AND date >= date('$today_date', '-7 days')" 2>/dev/null)
+        
+    # Calculate 7-day average for Ping and Jitter
+    local avg_quality_7d=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+        "SELECT AVG(avg_ping), AVG(avg_jitter) FROM connmon_history WHERE date < '$today_date' AND date >= date('$today_date', '-7 days')" 2>/dev/null)
+        
+    local avg_ping_7d=""
+    local avg_jitter_7d=""
+    
+    if [ -n "$avg_quality_7d" ] && [ "$avg_quality_7d" != "," ]; then
+        avg_ping_7d=$(echo "$avg_quality_7d" | cut -d, -f1)
+        avg_jitter_7d=$(echo "$avg_quality_7d" | cut -d, -f2)
+    fi
+    
+    # Use 0 or NULL if empty
+    if [ -z "$avg_bytes_7d" ]; then avg_bytes_7d="NULL"; fi
+    if [ -z "$avg_ping_7d" ]; then avg_ping_7d="NULL"; fi
+    if [ -z "$avg_jitter_7d" ]; then avg_jitter_7d="NULL"; fi
+    
+    # Calculate 7-day averages for new advanced statistics
+    local advanced_stats_7d=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+        "SELECT 
+         AVG(quality_distribution_excellent),
+         AVG(quality_distribution_good),
+         AVG(quality_distribution_poor),
+         AVG(bandwidth_efficiency_pct),
+         AVG(connection_stability_score),
+         AVG(quality_consistency),
+         AVG(active_hours_count),
+         AVG(usage_variance),
+         AVG(peak_offpeak_ratio),
+         AVG(connection_reliability_pct),
+         AVG(ping_consistency),
+         AVG(jitter_consistency)
+         FROM advanced_statistics_daily 
+         WHERE date < '$today_date' AND date >= date('$today_date', '-7 days')" 2>/dev/null)
+    
+    local quality_exc_7d="NULL"
+    local quality_good_7d="NULL"
+    local quality_poor_7d="NULL"
+    local bandwidth_eff_7d="NULL"
+    local stability_7d="NULL"
+    local quality_cons_7d="NULL"
+    local active_hours_7d="NULL"
+    local usage_var_7d="NULL"
+    local peak_ratio_7d="NULL"
+    local reliability_7d="NULL"
+    local ping_cons_7d="NULL"
+    local jitter_cons_7d="NULL"
+    
+    if [ -n "$advanced_stats_7d" ] && [ "$advanced_stats_7d" != "," ] && [ "$advanced_stats_7d" != ",,,,,,,,,,," ]; then
+        quality_exc_7d=$(echo "$advanced_stats_7d" | cut -d, -f1)
+        quality_good_7d=$(echo "$advanced_stats_7d" | cut -d, -f2)
+        quality_poor_7d=$(echo "$advanced_stats_7d" | cut -d, -f3)
+        bandwidth_eff_7d=$(echo "$advanced_stats_7d" | cut -d, -f4)
+        stability_7d=$(echo "$advanced_stats_7d" | cut -d, -f5)
+        quality_cons_7d=$(echo "$advanced_stats_7d" | cut -d, -f6)
+        active_hours_7d=$(echo "$advanced_stats_7d" | cut -d, -f7)
+        usage_var_7d=$(echo "$advanced_stats_7d" | cut -d, -f8)
+        peak_ratio_7d=$(echo "$advanced_stats_7d" | cut -d, -f9)
+        reliability_7d=$(echo "$advanced_stats_7d" | cut -d, -f10)
+        ping_cons_7d=$(echo "$advanced_stats_7d" | cut -d, -f11)
+        jitter_cons_7d=$(echo "$advanced_stats_7d" | cut -d, -f12)
+        
+        # Validate and set to NULL if empty
+        if [ -z "$quality_exc_7d" ] || [ "$quality_exc_7d" = "" ]; then quality_exc_7d="NULL"; fi
+        if [ -z "$quality_good_7d" ] || [ "$quality_good_7d" = "" ]; then quality_good_7d="NULL"; fi
+        if [ -z "$quality_poor_7d" ] || [ "$quality_poor_7d" = "" ]; then quality_poor_7d="NULL"; fi
+        if [ -z "$bandwidth_eff_7d" ] || [ "$bandwidth_eff_7d" = "" ]; then bandwidth_eff_7d="NULL"; fi
+        if [ -z "$stability_7d" ] || [ "$stability_7d" = "" ]; then stability_7d="NULL"; fi
+        if [ -z "$quality_cons_7d" ] || [ "$quality_cons_7d" = "" ]; then quality_cons_7d="NULL"; fi
+        if [ -z "$active_hours_7d" ] || [ "$active_hours_7d" = "" ]; then active_hours_7d="NULL"; fi
+        if [ -z "$usage_var_7d" ] || [ "$usage_var_7d" = "" ]; then usage_var_7d="NULL"; fi
+        if [ -z "$peak_ratio_7d" ] || [ "$peak_ratio_7d" = "" ]; then peak_ratio_7d="NULL"; fi
+        if [ -z "$reliability_7d" ] || [ "$reliability_7d" = "" ]; then reliability_7d="NULL"; fi
+        if [ -z "$ping_cons_7d" ] || [ "$ping_cons_7d" = "" ]; then ping_cons_7d="NULL"; fi
+        if [ -z "$jitter_cons_7d" ] || [ "$jitter_cons_7d" = "" ]; then jitter_cons_7d="NULL"; fi
+    fi
+    
+    # Calculate 30-day averages for all metrics
+    local avg_bytes_30d=$(sqlite3 "$ARCHIVE_DB_FILE" \
+        "SELECT AVG(total_bytes) FROM daily_usage WHERE date < '$today_date' AND date >= date('$today_date', '-30 days')" 2>/dev/null)
+    
+    local avg_quality_30d=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+        "SELECT AVG(avg_ping), AVG(avg_jitter) FROM connmon_history WHERE date < '$today_date' AND date >= date('$today_date', '-30 days')" 2>/dev/null)
+    
+    local avg_ping_30d=""
+    local avg_jitter_30d=""
+    
+    if [ -n "$avg_quality_30d" ] && [ "$avg_quality_30d" != "," ]; then
+        avg_ping_30d=$(echo "$avg_quality_30d" | cut -d, -f1)
+        avg_jitter_30d=$(echo "$avg_quality_30d" | cut -d, -f2)
+    fi
+    
+    if [ -z "$avg_bytes_30d" ]; then avg_bytes_30d="NULL"; fi
+    if [ -z "$avg_ping_30d" ]; then avg_ping_30d="NULL"; fi
+    if [ -z "$avg_jitter_30d" ]; then avg_jitter_30d="NULL"; fi
+    
+    # Calculate 30-day averages for advanced statistics
+    local advanced_stats_30d=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+        "SELECT 
+         AVG(quality_distribution_excellent),
+         AVG(quality_distribution_good),
+         AVG(quality_distribution_poor),
+         AVG(bandwidth_efficiency_pct),
+         AVG(connection_stability_score),
+         AVG(quality_consistency),
+         AVG(active_hours_count),
+         AVG(usage_variance),
+         AVG(peak_offpeak_ratio),
+         AVG(connection_reliability_pct),
+         AVG(ping_consistency),
+         AVG(jitter_consistency)
+         FROM advanced_statistics_daily 
+         WHERE date < '$today_date' AND date >= date('$today_date', '-30 days')" 2>/dev/null)
+    
+    local quality_exc_30d="NULL"
+    local quality_good_30d="NULL"
+    local quality_poor_30d="NULL"
+    local bandwidth_eff_30d="NULL"
+    local stability_30d="NULL"
+    local quality_cons_30d="NULL"
+    local active_hours_30d="NULL"
+    local usage_var_30d="NULL"
+    local peak_ratio_30d="NULL"
+    local reliability_30d="NULL"
+    local ping_cons_30d="NULL"
+    local jitter_cons_30d="NULL"
+    
+    if [ -n "$advanced_stats_30d" ] && [ "$advanced_stats_30d" != "," ] && [ "$advanced_stats_30d" != ",,,,,,,,,,," ]; then
+        quality_exc_30d=$(echo "$advanced_stats_30d" | cut -d, -f1)
+        quality_good_30d=$(echo "$advanced_stats_30d" | cut -d, -f2)
+        quality_poor_30d=$(echo "$advanced_stats_30d" | cut -d, -f3)
+        bandwidth_eff_30d=$(echo "$advanced_stats_30d" | cut -d, -f4)
+        stability_30d=$(echo "$advanced_stats_30d" | cut -d, -f5)
+        quality_cons_30d=$(echo "$advanced_stats_30d" | cut -d, -f6)
+        active_hours_30d=$(echo "$advanced_stats_30d" | cut -d, -f7)
+        usage_var_30d=$(echo "$advanced_stats_30d" | cut -d, -f8)
+        peak_ratio_30d=$(echo "$advanced_stats_30d" | cut -d, -f9)
+        reliability_30d=$(echo "$advanced_stats_30d" | cut -d, -f10)
+        ping_cons_30d=$(echo "$advanced_stats_30d" | cut -d, -f11)
+        jitter_cons_30d=$(echo "$advanced_stats_30d" | cut -d, -f12)
+        
+        # Validate and set to NULL if empty
+        if [ -z "$quality_exc_30d" ] || [ "$quality_exc_30d" = "" ]; then quality_exc_30d="NULL"; fi
+        if [ -z "$quality_good_30d" ] || [ "$quality_good_30d" = "" ]; then quality_good_30d="NULL"; fi
+        if [ -z "$quality_poor_30d" ] || [ "$quality_poor_30d" = "" ]; then quality_poor_30d="NULL"; fi
+        if [ -z "$bandwidth_eff_30d" ] || [ "$bandwidth_eff_30d" = "" ]; then bandwidth_eff_30d="NULL"; fi
+        if [ -z "$stability_30d" ] || [ "$stability_30d" = "" ]; then stability_30d="NULL"; fi
+        if [ -z "$quality_cons_30d" ] || [ "$quality_cons_30d" = "" ]; then quality_cons_30d="NULL"; fi
+        if [ -z "$active_hours_30d" ] || [ "$active_hours_30d" = "" ]; then active_hours_30d="NULL"; fi
+        if [ -z "$usage_var_30d" ] || [ "$usage_var_30d" = "" ]; then usage_var_30d="NULL"; fi
+        if [ -z "$peak_ratio_30d" ] || [ "$peak_ratio_30d" = "" ]; then peak_ratio_30d="NULL"; fi
+        if [ -z "$reliability_30d" ] || [ "$reliability_30d" = "" ]; then reliability_30d="NULL"; fi
+        if [ -z "$ping_cons_30d" ] || [ "$ping_cons_30d" = "" ]; then ping_cons_30d="NULL"; fi
+        if [ -z "$jitter_cons_30d" ] || [ "$jitter_cons_30d" = "" ]; then jitter_cons_30d="NULL"; fi
+    fi
+    
+    # Insert into weekly_averages table with all metrics (7-day and 30-day)
+    sqlite3 "$ARCHIVE_DB_FILE" \
+        "INSERT OR REPLACE INTO weekly_averages 
+         (date, avg_bytes_7d, avg_ping_7d, avg_jitter_7d,
+          quality_dist_excellent_7d, quality_dist_good_7d, quality_dist_poor_7d,
+          bandwidth_efficiency_7d, connection_stability_7d, quality_consistency_7d,
+          active_hours_7d, usage_variance_7d, peak_offpeak_ratio_7d,
+          connection_reliability_7d, ping_consistency_7d, jitter_consistency_7d,
+          avg_bytes_30d, avg_ping_30d, avg_jitter_30d,
+          quality_dist_excellent_30d, quality_dist_good_30d, quality_dist_poor_30d,
+          bandwidth_efficiency_30d, connection_stability_30d, quality_consistency_30d,
+          active_hours_30d, usage_variance_30d, peak_offpeak_ratio_30d,
+          connection_reliability_30d, ping_consistency_30d, jitter_consistency_30d,
+          avg_bytes_90d, avg_ping_90d, avg_jitter_90d,
+          quality_dist_excellent_90d, quality_dist_good_90d, quality_dist_poor_90d,
+          bandwidth_efficiency_90d, connection_stability_90d, quality_consistency_90d,
+          active_hours_90d, usage_variance_90d, peak_offpeak_ratio_90d,
+          connection_reliability_90d, ping_consistency_90d, jitter_consistency_90d)
+         VALUES ('$today_date', $avg_bytes_7d, $avg_ping_7d, $avg_jitter_7d,
+                 $quality_exc_7d, $quality_good_7d, $quality_poor_7d,
+                 $bandwidth_eff_7d, $stability_7d, $quality_cons_7d,
+                 $active_hours_7d, $usage_var_7d, $peak_ratio_7d,
+                 $reliability_7d, $ping_cons_7d, $jitter_cons_7d,
+                 $avg_bytes_30d, $avg_ping_30d, $avg_jitter_30d,
+                 $quality_exc_30d, $quality_good_30d, $quality_poor_30d,
+                 $bandwidth_eff_30d, $stability_30d, $quality_cons_30d,
+                 $active_hours_30d, $usage_var_30d, $peak_ratio_30d,
+                 $reliability_30d, $ping_cons_30d, $jitter_cons_30d,
+                 $avg_bytes_90d, $avg_ping_90d, $avg_jitter_90d,
+                 $quality_exc_90d, $quality_good_90d, $quality_poor_90d,
+                 $bandwidth_eff_90d, $stability_90d, $quality_cons_90d,
+                 $active_hours_90d, $usage_var_90d, $peak_ratio_90d,
+                 $reliability_90d, $ping_cons_90d, $jitter_cons_90d);" 2>/dev/null
 }
 
 # --- NEW: Function to calculate and archive device session statistics ---
@@ -458,50 +871,37 @@ calculate_device_session_stats() {
         if [ -z "$timestamps" ]; then continue; fi
         
         # Calculate session stats
-        local first_timestamp=$(echo "$timestamps" | head -n 1)
-        local last_timestamp=$(echo "$timestamps" | tail -n 1)
-        local total_connection_time=$(($last_timestamp - $first_timestamp))
+        # TrafficAnalyzer data is hourly (timestamps at :00)
+        # We count the number of hourly records to determine total active time
+        local num_timestamps=$(echo "$timestamps" | wc -w)
+        local total_connection_time=$(($num_timestamps * 3600))
         
-        # Count reconnections - Best practice: Use adaptive threshold based on typical patterns
-        # Gap > 5 minutes (300s) indicates disconnection, but also check for significant gaps
-        # Consider gaps > 10% of total session time as reconnections (handles long sessions)
+        # Count reconnections
+        # Data points are hourly (3600s apart).
+        # A gap of 3600s is normal continuity.
+        # A gap > 4000s (e.g. 7200s) implies a disconnection (missed hour).
         local reconnection_count=0
         local prev_ts=""
-        local total_gap_time=0
         
-        # First pass: calculate adaptive threshold based on total connection time
-        local adaptive_threshold=300
-        if [ $total_connection_time -gt 3600 ]; then
-            adaptive_threshold=$(awk -v t="$total_connection_time" 'BEGIN {printf "%.0f", t * 0.1}')
-            if [ $adaptive_threshold -lt 300 ]; then adaptive_threshold=300; fi
-        fi
-        
-        # Second pass: count reconnections using adaptive threshold
         for current_ts in $timestamps; do
             if [ -n "$prev_ts" ]; then
                 local gap=$(($current_ts - $prev_ts))
-                # Standard threshold: 5 minutes (300 seconds) or adaptive for long sessions
-                if [ $gap -gt $adaptive_threshold ]; then
+                # If gap is significantly larger than 1 hour (allow some buffer), count as reconnection
+                if [ $gap -gt 4000 ]; then
                     reconnection_count=$(($reconnection_count + 1))
-                    total_gap_time=$(($total_gap_time + $gap))
                 fi
             fi
             prev_ts="$current_ts"
         done
         
         # Calculate average session duration
-        # If we have reconnections, divide total time by (reconnections + 1)
-        # Only calculate if total connection time is meaningful (at least 60 seconds)
+        # Total active time divided by number of sessions (reconnections + 1)
         local session_count=$(($reconnection_count + 1))
         local avg_session_duration=0
-        if [ $total_connection_time -ge 60 ]; then
-            if [ $session_count -gt 0 ]; then
-                avg_session_duration=$(($total_connection_time / $session_count))
-            else
-                avg_session_duration=$total_connection_time
-            fi
+        
+        if [ $session_count -gt 0 ]; then
+            avg_session_duration=$(($total_connection_time / $session_count))
         fi
-        # If avg_session_duration is still 0 or very small, set to 0 (will show as N/A in display)
         
         # Store in archive
         sqlite3 "$ARCHIVE_DB_FILE" \
@@ -984,21 +1384,24 @@ get_current_bandwidth_speeds() {
     
     # Calculate the last completed hour boundary
     # If it's 11:44, last completed hour is 10:00-11:00 (saved at 11:00)
-    local current_minute=$(date +%M)
-    local current_second=$(date +%S)
+    local current_minute=$(date +%M | sed 's/^0*//')
+    local current_second=$(date +%S | sed 's/^0*//')
     
     # Get current timestamp
     local now_ts=$(date +%s)
     
     # Calculate seconds into current hour
-    local seconds_into_hour=$(($current_minute * 60 + $current_second))
+    # Ensure we have valid numbers (default to 0 if empty after stripping zeros)
+    if [ -z "$current_minute" ]; then current_minute=0; fi
+    if [ -z "$current_second" ]; then current_second=0; fi
+    local seconds_into_hour=$((current_minute * 60 + current_second))
     
     # Last completed hour end = current time - seconds into current hour
     # This gives us the timestamp of the last :00 (when TrafficAnalyzer last saved)
-    local last_hour_end=$(($now_ts - $seconds_into_hour))
+    local last_hour_end=$((now_ts - seconds_into_hour))
     
     # Last completed hour start = last hour end - 3600 seconds
-    local last_hour_start=$(($last_hour_end - 3600))
+    local last_hour_start=$((last_hour_end - 3600))
     
     # Get total download (rx) and upload (tx) in bytes from last completed hour
     # Use <= to include data at the exact hour boundary (when TrafficAnalyzer saves)
@@ -1072,12 +1475,15 @@ get_device_statistics() {
     local midnight_today=$(date -d "00:00:00" +%s)
     
     # Calculate the last completed hour boundary (TrafficAnalyzer saves at :00)
-    local current_minute=$(date +%M)
-    local current_second=$(date +%S)
+    local current_minute=$(date +%M | sed 's/^0*//')
+    local current_second=$(date +%S | sed 's/^0*//')
     local now_ts=$(date +%s)
-    local seconds_into_hour=$(($current_minute * 60 + $current_second))
-    local last_hour_end=$(($now_ts - $seconds_into_hour))
-    local last_hour_start=$(($last_hour_end - 3600))
+    # Ensure we have valid numbers (default to 0 if empty after stripping zeros)
+    if [ -z "$current_minute" ]; then current_minute=0; fi
+    if [ -z "$current_second" ]; then current_second=0; fi
+    local seconds_into_hour=$((current_minute * 60 + current_second))
+    local last_hour_end=$((now_ts - seconds_into_hour))
+    local last_hour_start=$((last_hour_end - 3600))
     
     # Total unique devices seen today
     total_devices=$(sqlite3 "$LIVE_DB_FILE" \
@@ -1161,7 +1567,12 @@ get_peak_usage_times() {
     if [ "$peak_hour" = "00" ] || [ "$peak_hour" = "23" ]; then
         peak_time="23:00-00:00"
     else
-        local next_hour=$(printf "%02d" $((${peak_hour#0} + 1)))
+        # Remove leading zeros and calculate next hour safely
+        local peak_hour_stripped=$(echo "$peak_hour" | sed 's/^0*//')
+        if [ -z "$peak_hour_stripped" ]; then peak_hour_stripped=0; fi
+        local peak_hour_num=$((peak_hour_stripped))
+        local next_hour_num=$((peak_hour_num + 1))
+        local next_hour=$(printf "%02d" $next_hour_num)
         peak_time="${peak_hour}:00-${next_hour}:00"
     fi
     
@@ -1331,13 +1742,47 @@ get_usage_patterns() {
         return
     fi
     
-    # Get quiet hours - Best practice: Filter out hours with zero/insignificant data
-    # Only consider hours with meaningful activity (at least 1KB to avoid noise)
+    # Get quiet hours - Based on 90-day trend (fallback to 30-day, 7-day, then today if needed)
+    # This provides a more accurate pattern for longer-term trends (captures seasonal patterns in Philippines: summer/rain)
     local quiet_hours=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
-        "SELECT hour, total_bytes FROM hourly_usage_patterns 
-         WHERE date = '$today_date' AND total_bytes >= 1024
-         ORDER BY total_bytes ASC 
+        "SELECT hour, AVG(total_bytes) as avg_bytes
+         FROM hourly_usage_patterns 
+         WHERE date < '$today_date' AND date >= date('$today_date', '-90 days') AND total_bytes >= 1024
+         GROUP BY hour
+         ORDER BY avg_bytes ASC 
          LIMIT 3" 2>/dev/null)
+    
+    # Fallback to 30-day if 90-day has no data
+    if [ -z "$quiet_hours" ] || [ "$quiet_hours" = "" ]; then
+        quiet_hours=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+            "SELECT hour, AVG(total_bytes) as avg_bytes
+             FROM hourly_usage_patterns 
+             WHERE date < '$today_date' AND date >= date('$today_date', '-30 days') AND total_bytes >= 1024
+             GROUP BY hour
+             ORDER BY avg_bytes ASC 
+             LIMIT 3" 2>/dev/null)
+    fi
+    
+    # Fallback to 7-day if 30-day has no data
+    if [ -z "$quiet_hours" ] || [ "$quiet_hours" = "" ]; then
+        quiet_hours=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+            "SELECT hour, AVG(total_bytes) as avg_bytes
+             FROM hourly_usage_patterns 
+             WHERE date < '$today_date' AND date >= date('$today_date', '-7 days') AND total_bytes >= 1024
+             GROUP BY hour
+             ORDER BY avg_bytes ASC 
+             LIMIT 3" 2>/dev/null)
+    fi
+    
+    # Final fallback to today if no historical data
+    if [ -z "$quiet_hours" ] || [ "$quiet_hours" = "" ]; then
+        quiet_hours=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+            "SELECT hour, total_bytes
+             FROM hourly_usage_patterns 
+             WHERE date = '$today_date' AND total_bytes >= 1024
+             ORDER BY total_bytes ASC 
+             LIMIT 3" 2>/dev/null)
+    fi
     
     local quiet_output="N/A"
     if [ -n "$quiet_hours" ]; then
@@ -1347,12 +1792,47 @@ get_usage_patterns() {
         }')
     fi
     
-    # Get top 3 busiest hours - Filter out hours with zero/insignificant data (same as quiet hours)
+    # Get top 3 busiest hours - Based on 90-day trend (fallback to 30-day, 7-day, then today if needed)
+    # This provides a more accurate pattern for longer-term trends (captures seasonal patterns in Philippines: summer/rain)
     local busy_hours=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
-        "SELECT hour, total_bytes FROM hourly_usage_patterns 
-         WHERE date = '$today_date' AND total_bytes >= 1024
-         ORDER BY total_bytes DESC 
+        "SELECT hour, AVG(total_bytes) as avg_bytes
+         FROM hourly_usage_patterns 
+         WHERE date < '$today_date' AND date >= date('$today_date', '-90 days') AND total_bytes >= 1024
+         GROUP BY hour
+         ORDER BY avg_bytes DESC 
          LIMIT 3" 2>/dev/null)
+    
+    # Fallback to 30-day if 90-day has no data
+    if [ -z "$busy_hours" ] || [ "$busy_hours" = "" ]; then
+        busy_hours=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+            "SELECT hour, AVG(total_bytes) as avg_bytes
+             FROM hourly_usage_patterns 
+             WHERE date < '$today_date' AND date >= date('$today_date', '-30 days') AND total_bytes >= 1024
+             GROUP BY hour
+             ORDER BY avg_bytes DESC 
+             LIMIT 3" 2>/dev/null)
+    fi
+    
+    # Fallback to 7-day if 30-day has no data
+    if [ -z "$busy_hours" ] || [ "$busy_hours" = "" ]; then
+        busy_hours=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+            "SELECT hour, AVG(total_bytes) as avg_bytes
+             FROM hourly_usage_patterns 
+             WHERE date < '$today_date' AND date >= date('$today_date', '-7 days') AND total_bytes >= 1024
+             GROUP BY hour
+             ORDER BY avg_bytes DESC 
+             LIMIT 3" 2>/dev/null)
+    fi
+    
+    # Final fallback to today if no historical data
+    if [ -z "$busy_hours" ] || [ "$busy_hours" = "" ]; then
+        busy_hours=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+            "SELECT hour, total_bytes
+             FROM hourly_usage_patterns 
+             WHERE date = '$today_date' AND total_bytes >= 1024
+             ORDER BY total_bytes DESC 
+             LIMIT 3" 2>/dev/null)
+    fi
     
     local busy_output="N/A"
     if [ -n "$busy_hours" ]; then
@@ -1368,14 +1848,67 @@ get_usage_patterns() {
         }')
     fi
     
-    # Day vs Night comparison - Best practice: Include percentage breakdown for better insights
+    # Day vs Night comparison - Based on 90-day trend (fallback to 30-day, 7-day, then today if needed)
     # Day: 6 AM - 6 PM (12 hours), Night: 6 PM - 6 AM (12 hours)
+    # Calculate average daily usage for day and night periods
+    # 90-day captures seasonal patterns in Philippines (summer/rain seasons)
     local day_night_data=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
         "SELECT 
-         SUM(CASE WHEN hour >= 6 AND hour < 18 THEN total_bytes ELSE 0 END) as day_bytes,
-         SUM(CASE WHEN hour < 6 OR hour >= 18 THEN total_bytes ELSE 0 END) as night_bytes
-         FROM hourly_usage_patterns 
-         WHERE date = '$today_date'" 2>/dev/null)
+         AVG(day_total) as day_bytes,
+         AVG(night_total) as night_bytes
+         FROM (
+             SELECT 
+             date,
+             SUM(CASE WHEN hour >= 6 AND hour < 18 THEN total_bytes ELSE 0 END) as day_total,
+             SUM(CASE WHEN hour < 6 OR hour >= 18 THEN total_bytes ELSE 0 END) as night_total
+             FROM hourly_usage_patterns 
+             WHERE date < '$today_date' AND date >= date('$today_date', '-90 days')
+             GROUP BY date
+         )" 2>/dev/null)
+    
+    # Fallback to 30-day if 90-day has no data
+    if [ -z "$day_night_data" ] || [ "$day_night_data" = "," ]; then
+        day_night_data=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+            "SELECT 
+             AVG(day_total) as day_bytes,
+             AVG(night_total) as night_bytes
+             FROM (
+                 SELECT 
+                 date,
+                 SUM(CASE WHEN hour >= 6 AND hour < 18 THEN total_bytes ELSE 0 END) as day_total,
+                 SUM(CASE WHEN hour < 6 OR hour >= 18 THEN total_bytes ELSE 0 END) as night_total
+                 FROM hourly_usage_patterns 
+                 WHERE date < '$today_date' AND date >= date('$today_date', '-30 days')
+                 GROUP BY date
+             )" 2>/dev/null)
+    fi
+    
+    # Fallback to 7-day if 30-day has no data
+    if [ -z "$day_night_data" ] || [ "$day_night_data" = "," ]; then
+        day_night_data=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+            "SELECT 
+             AVG(day_total) as day_bytes,
+             AVG(night_total) as night_bytes
+             FROM (
+                 SELECT 
+                 date,
+                 SUM(CASE WHEN hour >= 6 AND hour < 18 THEN total_bytes ELSE 0 END) as day_total,
+                 SUM(CASE WHEN hour < 6 OR hour >= 18 THEN total_bytes ELSE 0 END) as night_total
+                 FROM hourly_usage_patterns 
+                 WHERE date < '$today_date' AND date >= date('$today_date', '-7 days')
+                 GROUP BY date
+             )" 2>/dev/null)
+    fi
+    
+    # Final fallback to today if no historical data
+    if [ -z "$day_night_data" ] || [ "$day_night_data" = "," ]; then
+        day_night_data=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+            "SELECT 
+             SUM(CASE WHEN hour >= 6 AND hour < 18 THEN total_bytes ELSE 0 END) as day_bytes,
+             SUM(CASE WHEN hour < 6 OR hour >= 18 THEN total_bytes ELSE 0 END) as night_bytes
+             FROM hourly_usage_patterns 
+             WHERE date = '$today_date'" 2>/dev/null)
+    fi
     
     local daynight_output="N/A"
     if [ -n "$day_night_data" ] && [ "$day_night_data" != "," ]; then
@@ -1392,9 +1925,9 @@ get_usage_patterns() {
             night_pct=$(awk -v n="$night_bytes" -v t="$total_bytes" 'BEGIN {if (t > 0) printf "%.0f", (n/t)*100; else print 0}')
         fi
         
-        local day_human=$(bytes_to_human $day_bytes)
-        local night_human=$(bytes_to_human $night_bytes)
-        daynight_output="Day: <code>$day_human</code> (<code>${day_pct}%</code>) | Night: <code>$night_human</code> (<code>${night_pct}%</code>)"
+                local day_human=$(bytes_to_human $day_bytes)
+                local night_human=$(bytes_to_human $night_bytes)
+                daynight_output="Day (06:00-18:00): <code>$day_human</code> (<code>${day_pct}%</code>) | Night (18:00-06:00): <code>$night_human</code> (<code>${night_pct}%</code>)"
     fi
     
     eval $__result_var_quiet="'$quiet_output'"
@@ -1438,106 +1971,1150 @@ get_most_active_device() {
     eval $__result_var="'$safe_name (<code>$duration_formatted</code>)'"
 }
 
-# --- NEW: Function to get advanced statistics from archive ---
-# Uses user_archive.db for all historical statistical analysis
-get_advanced_statistics() {
-    local __result_var_avg_session=$1
-    local __result_var_stability=$2
-    local __result_var_efficiency=$3
+# --- NEW: Extended Advanced Statistics Calculation Functions ---
+
+# 1. Calculate Quality Distribution (Excellent/Good/Poor hours)
+calculate_quality_distribution() {
     local today_date=$(date +%Y-%m-%d)
+    local excellent=0
+    local good=0
+    local poor=0
     
     if [ ! -f "$ARCHIVE_DB_FILE" ]; then
-        eval $__result_var_avg_session="'N/A'"
-        eval $__result_var_stability="'N/A'"
-        eval $__result_var_efficiency="'N/A'"
         return
     fi
     
-    # Average session duration - Best practice: Use median for robustness (outlier-resistant)
-    # Falls back to mean if insufficient data points
-    # Only count devices with meaningful session durations (at least 60 seconds)
-    local device_count=$(sqlite3 "$ARCHIVE_DB_FILE" \
-        "SELECT COUNT(*) FROM device_session_stats WHERE date = '$today_date' AND avg_session_duration >= 60" 2>/dev/null)
-    
-    local avg_session_output="N/A"
-    if [ -n "$device_count" ] && [ "$device_count" != "0" ] && [ "$device_count" != "" ]; then
-        # Use median if we have enough data points (best practice: median is more robust)
-        if [ "$device_count" -ge 3 ]; then
-            local median_offset=$(awk -v c="$device_count" 'BEGIN {printf "%.0f", (c-1)/2}')
-            local median_session=$(sqlite3 "$ARCHIVE_DB_FILE" \
-                "SELECT avg_session_duration FROM device_session_stats 
-                 WHERE date = '$today_date' AND avg_session_duration >= 60
-                 ORDER BY avg_session_duration 
-                 LIMIT 1 OFFSET $median_offset" 2>/dev/null)
-            if [ -n "$median_session" ] && [ "$median_session" != "" ]; then
-                local median_int=$(printf "%.0f" "$median_session" 2>/dev/null)
-                avg_session_output=$(wicens_format_duration $median_int)
-            fi
-        fi
-        
-        # Fallback to mean if median unavailable
-        if [ "$avg_session_output" = "N/A" ]; then
-            local avg_session=$(sqlite3 "$ARCHIVE_DB_FILE" \
-                "SELECT AVG(avg_session_duration) FROM device_session_stats WHERE date = '$today_date' AND avg_session_duration >= 60" 2>/dev/null)
-            if [ -n "$avg_session" ] && [ "$avg_session" != "" ] && [ "$avg_session" != "NULL" ]; then
-                local avg_session_int=$(printf "%.0f" "$avg_session" 2>/dev/null)
-                avg_session_output=$(wicens_format_duration $avg_session_int)
-            fi
-        fi
-    fi
-    
-    # Connection stability - Best practice: Use median and show distribution
-    # Lower reconnection count indicates better stability
-    local stability_output="N/A"
-    local device_count_stable=$(sqlite3 "$ARCHIVE_DB_FILE" \
-        "SELECT COUNT(*) FROM device_session_stats WHERE date = '$today_date'" 2>/dev/null)
-    
-    if [ -n "$device_count_stable" ] && [ "$device_count_stable" != "0" ] && [ "$device_count_stable" != "" ]; then
-        # Calculate median reconnection count (more robust than mean)
-        local median_offset_stable=$(awk -v c="$device_count_stable" 'BEGIN {printf "%.0f", (c-1)/2}')
-        local median_reconnects=$(sqlite3 "$ARCHIVE_DB_FILE" \
-            "SELECT reconnection_count FROM device_session_stats 
-             WHERE date = '$today_date'
-             ORDER BY reconnection_count 
-             LIMIT 1 OFFSET $median_offset_stable" 2>/dev/null)
-        
-        # Also get devices with zero reconnections (most stable)
-        local stable_devices=$(sqlite3 "$ARCHIVE_DB_FILE" \
-            "SELECT COUNT(*) FROM device_session_stats 
-             WHERE date = '$today_date' AND reconnection_count = 0" 2>/dev/null)
-        
-        if [ -n "$median_reconnects" ] && [ "$median_reconnects" != "" ]; then
-            local stable_pct=0
-            if [ -n "$stable_devices" ] && [ "$device_count_stable" != "0" ]; then
-                stable_pct=$(awk -v s="$stable_devices" -v t="$device_count_stable" 'BEGIN {printf "%.0f", (s/t)*100}')
-            fi
-            stability_output="<code>$median_reconnects</code> median (<code>${stable_pct}%</code> stable)"
-        fi
-    fi
-    
-    # Bandwidth efficiency (total data / total connection time across all devices)
-    # Only calculate if we have meaningful connection time (at least 1 hour = 3600 seconds)
-    local efficiency_data=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+    # Count hours in each quality tier
+    local quality_data=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
         "SELECT 
-         (SELECT SUM(total_bytes) FROM daily_usage WHERE date = '$today_date'),
-         (SELECT SUM(total_connection_time) FROM device_session_stats WHERE date = '$today_date' AND total_connection_time >= 60)" 2>/dev/null)
+         COUNT(CASE WHEN avg_quality > 95 THEN 1 END) as excellent,
+         COUNT(CASE WHEN avg_quality >= 85 AND avg_quality <= 95 THEN 1 END) as good,
+         COUNT(CASE WHEN avg_quality < 85 AND avg_quality IS NOT NULL THEN 1 END) as poor
+         FROM connmon_quality_patterns 
+         WHERE date = '$today_date' AND avg_quality IS NOT NULL" 2>/dev/null)
     
-    local efficiency_output="N/A"
-    if [ -n "$efficiency_data" ] && [ "$efficiency_data" != "," ]; then
-        local total_bytes=$(echo "$efficiency_data" | cut -d, -f1)
-        local total_time=$(echo "$efficiency_data" | cut -d, -f2)
-        # Only calculate if total_time is at least 1 hour (3600 seconds) to avoid unrealistic numbers
-        if [ -n "$total_bytes" ] && [ -n "$total_time" ] && [ "$total_time" != "0" ] && [ "$total_time" != "" ] && [ "$total_time" -ge 3600 ]; then
-            # Calculate bytes per hour
-            local bytes_per_hour=$(awk -v b="$total_bytes" -v t="$total_time" 'BEGIN {if (t > 0) printf "%.0f", (b / t) * 3600; else print "0"}')
-            local efficiency_human=$(bytes_to_human $bytes_per_hour)
-            efficiency_output="<code>$efficiency_human</code>/hour"
+    if [ -n "$quality_data" ] && [ "$quality_data" != "," ] && [ "$quality_data" != ",," ]; then
+        excellent=$(echo "$quality_data" | cut -d, -f1)
+        good=$(echo "$quality_data" | cut -d, -f2)
+        poor=$(echo "$quality_data" | cut -d, -f3)
+        
+        # Validate counts
+        if [ -z "$excellent" ] || [ "$excellent" = "" ] || [ "$excellent" = "NULL" ]; then excellent=0; fi
+        if [ -z "$good" ] || [ "$good" = "" ] || [ "$good" = "NULL" ]; then good=0; fi
+        if [ -z "$poor" ] || [ "$poor" = "" ] || [ "$poor" = "NULL" ]; then poor=0; fi
+    fi
+    
+    # Store in archive
+    sqlite3 "$ARCHIVE_DB_FILE" \
+        "INSERT OR REPLACE INTO advanced_statistics_daily 
+         (date, quality_distribution_excellent, quality_distribution_good, quality_distribution_poor) 
+         VALUES ('$today_date', $excellent, $good, $poor);" 2>/dev/null
+}
+
+# 2. Calculate Bandwidth Efficiency (Peak vs Average utilization)
+calculate_bandwidth_efficiency() {
+    local today_date=$(date +%Y-%m-%d)
+    local efficiency="NULL"
+    
+    if [ ! -f "$ARCHIVE_DB_FILE" ]; then
+        return
+    fi
+    
+    # Get peak and average bytes from hourly patterns
+    local bandwidth_data=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+        "SELECT MAX(total_bytes), AVG(total_bytes) 
+         FROM hourly_usage_patterns 
+         WHERE date = '$today_date' AND total_bytes > 0" 2>/dev/null)
+    
+    if [ -n "$bandwidth_data" ] && [ "$bandwidth_data" != "," ]; then
+        local peak_bytes=$(echo "$bandwidth_data" | cut -d, -f1)
+        local avg_bytes=$(echo "$bandwidth_data" | cut -d, -f2)
+        
+        # Validate and calculate efficiency percentage
+        # Use awk for floating point comparison
+        local peak_check=$(awk -v p="$peak_bytes" 'BEGIN {if (p > 0) print 1; else print 0}')
+        if [ -n "$peak_bytes" ] && [ "$peak_bytes" != "" ] && [ "$peak_bytes" != "NULL" ] && \
+           [ -n "$avg_bytes" ] && [ "$avg_bytes" != "" ] && [ "$avg_bytes" != "NULL" ] && \
+           [ "$peak_bytes" != "0" ] && [ "$peak_check" = "1" ]; then
+            efficiency=$(awk -v a="$avg_bytes" -v p="$peak_bytes" 'BEGIN {
+                if (p > 0) printf "%.2f", (a/p)*100
+                else print "NULL"
+            }')
+            
+            # Validate range (0-100)
+            if [ -n "$efficiency" ] && [ "$efficiency" != "NULL" ]; then
+                local eff_check=$(awk -v e="$efficiency" 'BEGIN {if (e >= 0 && e <= 100) print 1; else print 0}')
+                if [ "$eff_check" != "1" ]; then efficiency="NULL"; fi
+            fi
         fi
     fi
     
-    eval $__result_var_avg_session="'$avg_session_output'"
-    eval $__result_var_stability="'$stability_output'"
-    eval $__result_var_efficiency="'$efficiency_output'"
+    # Store in archive
+    sqlite3 "$ARCHIVE_DB_FILE" \
+        "INSERT OR REPLACE INTO advanced_statistics_daily (date, bandwidth_efficiency_pct) 
+         VALUES ('$today_date', $efficiency);" 2>/dev/null
+}
+
+# 3. Calculate Connection Stability Score (from Wicens data)
+calculate_connection_stability() {
+    local today_date=$(date +%Y-%m-%d)
+    local stability="NULL"
+    
+    if [ ! -f "$ARCHIVE_DB_FILE" ]; then
+        return
+    fi
+    
+    # Get today's reboot count and uptime data
+    local reboot_count=$(sqlite3 "$ARCHIVE_DB_FILE" \
+        "SELECT reboot_count FROM wicens_reboot_history WHERE date = '$today_date'" 2>/dev/null)
+    
+    if [ -z "$reboot_count" ] || [ "$reboot_count" = "" ] || [ "$reboot_count" = "NULL" ]; then
+        reboot_count=0
+    fi
+    
+    # Calculate stability score: 100 - (reboots * 10), minimum 0
+    # Fewer reboots = higher stability
+    if [ -n "$reboot_count" ] && [ "$reboot_count" != "" ]; then
+        stability=$(awk -v r="$reboot_count" 'BEGIN {
+            score = 100 - (r * 10)
+            if (score < 0) score = 0
+            if (score > 100) score = 100
+            printf "%.2f", score
+        }')
+    fi
+    
+    # Store in archive
+    sqlite3 "$ARCHIVE_DB_FILE" \
+        "INSERT OR REPLACE INTO advanced_statistics_daily (date, connection_stability_score) 
+         VALUES ('$today_date', $stability);" 2>/dev/null
+}
+
+# 4. Calculate Quality Consistency (Standard deviation of quality)
+calculate_quality_consistency() {
+    local today_date=$(date +%Y-%m-%d)
+    local consistency="NULL"
+    
+    if [ ! -f "$ARCHIVE_DB_FILE" ]; then
+        return
+    fi
+    
+    # Calculate standard deviation of quality across hours
+    local variance=$(sqlite3 "$ARCHIVE_DB_FILE" \
+        "SELECT AVG((avg_quality - (SELECT AVG(avg_quality) FROM connmon_quality_patterns WHERE date = '$today_date' AND avg_quality IS NOT NULL)) * 
+                    (avg_quality - (SELECT AVG(avg_quality) FROM connmon_quality_patterns WHERE date = '$today_date' AND avg_quality IS NOT NULL)))
+         FROM connmon_quality_patterns 
+         WHERE date = '$today_date' AND avg_quality IS NOT NULL" 2>/dev/null)
+    
+    if [ -n "$variance" ] && [ "$variance" != "" ] && [ "$variance" != "NULL" ]; then
+        # Calculate standard deviation (square root of variance)
+        consistency=$(awk -v v="$variance" 'BEGIN {
+            if (v >= 0) printf "%.2f", sqrt(v)
+            else print "NULL"
+        }')
+        
+        # Validate range (>= 0)
+        if [ -n "$consistency" ] && [ "$consistency" != "NULL" ]; then
+            local cons_check=$(awk -v c="$consistency" 'BEGIN {if (c >= 0) print 1; else print 0}')
+            if [ "$cons_check" != "1" ]; then consistency="NULL"; fi
+        fi
+    fi
+    
+    # Store in archive
+    sqlite3 "$ARCHIVE_DB_FILE" \
+        "INSERT OR REPLACE INTO advanced_statistics_daily (date, quality_consistency) 
+         VALUES ('$today_date', $consistency);" 2>/dev/null
+}
+
+# 5. Calculate Worst Quality Period (Hour with lowest quality)
+calculate_worst_quality_period() {
+    local today_date=$(date +%Y-%m-%d)
+    local worst_hour="NULL"
+    
+    if [ ! -f "$ARCHIVE_DB_FILE" ]; then
+        return
+    fi
+    
+    # Find hour with lowest quality (get the hour that has the minimum quality value)
+    local worst_data=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+        "SELECT hour 
+         FROM connmon_quality_patterns 
+         WHERE date = '$today_date' AND avg_quality IS NOT NULL 
+         ORDER BY avg_quality ASC 
+         LIMIT 1" 2>/dev/null)
+    
+    if [ -n "$worst_data" ] && [ "$worst_data" != "," ]; then
+        worst_hour=$(echo "$worst_data" | cut -d, -f1)
+        
+        # Validate hour range (0-23)
+        if [ -n "$worst_hour" ] && [ "$worst_hour" != "" ] && [ "$worst_hour" != "NULL" ]; then
+            local hour_check=$(awk -v h="$worst_hour" 'BEGIN {if (h >= 0 && h <= 23) print 1; else print 0}')
+            if [ "$hour_check" != "1" ]; then worst_hour="NULL"; fi
+        else
+            worst_hour="NULL"
+        fi
+    fi
+    
+    # Store in archive
+    sqlite3 "$ARCHIVE_DB_FILE" \
+        "INSERT OR REPLACE INTO advanced_statistics_daily (date, worst_quality_hour) 
+         VALUES ('$today_date', $worst_hour);" 2>/dev/null
+}
+
+# 6. Calculate Active Hours Count (Hours with meaningful traffic >1MB)
+calculate_active_hours() {
+    local today_date=$(date +%Y-%m-%d)
+    local active_hours=0
+    
+    if [ ! -f "$ARCHIVE_DB_FILE" ]; then
+        return
+    fi
+    
+    # Count hours with traffic > 1MB (1048576 bytes)
+    local count=$(sqlite3 "$ARCHIVE_DB_FILE" \
+        "SELECT COUNT(*) 
+         FROM hourly_usage_patterns 
+         WHERE date = '$today_date' AND total_bytes > 1048576" 2>/dev/null)
+    
+    if [ -n "$count" ] && [ "$count" != "" ] && [ "$count" != "NULL" ]; then
+        active_hours=$count
+        # Validate range (0-24)
+        if [ "$active_hours" -lt 0 ]; then active_hours=0; fi
+        if [ "$active_hours" -gt 24 ]; then active_hours=24; fi
+    fi
+    
+    # Store in archive
+    sqlite3 "$ARCHIVE_DB_FILE" \
+        "INSERT OR REPLACE INTO advanced_statistics_daily (date, active_hours_count) 
+         VALUES ('$today_date', $active_hours);" 2>/dev/null
+}
+
+# 7. Calculate Usage Variance (Coefficient of variation)
+calculate_usage_variance() {
+    local today_date=$(date +%Y-%m-%d)
+    local variance="NULL"
+    
+    if [ ! -f "$ARCHIVE_DB_FILE" ]; then
+        return
+    fi
+    
+    # Get mean and standard deviation of hourly usage
+    local stats_data=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+        "SELECT AVG(total_bytes), 
+         SQRT(AVG((total_bytes - (SELECT AVG(total_bytes) FROM hourly_usage_patterns WHERE date = '$today_date' AND total_bytes > 0)) * 
+                  (total_bytes - (SELECT AVG(total_bytes) FROM hourly_usage_patterns WHERE date = '$today_date' AND total_bytes > 0))))
+         FROM hourly_usage_patterns 
+         WHERE date = '$today_date' AND total_bytes > 0" 2>/dev/null)
+    
+    if [ -n "$stats_data" ] && [ "$stats_data" != "," ]; then
+        local mean=$(echo "$stats_data" | cut -d, -f1)
+        local stddev=$(echo "$stats_data" | cut -d, -f2)
+        
+        # Calculate coefficient of variation (stddev/mean)
+        # Use awk for floating point comparison
+        local mean_check=$(awk -v m="$mean" 'BEGIN {if (m > 0) print 1; else print 0}')
+        if [ -n "$mean" ] && [ "$mean" != "" ] && [ "$mean" != "NULL" ] && \
+           [ -n "$stddev" ] && [ "$stddev" != "" ] && [ "$stddev" != "NULL" ] && \
+           [ "$mean" != "0" ] && [ "$mean_check" = "1" ]; then
+            variance=$(awk -v s="$stddev" -v m="$mean" 'BEGIN {
+                if (m > 0) printf "%.4f", s/m
+                else print "NULL"
+            }')
+            
+            # Validate range (>= 0, reasonable upper bound)
+            if [ -n "$variance" ] && [ "$variance" != "NULL" ]; then
+                local var_check=$(awk -v v="$variance" 'BEGIN {if (v >= 0 && v < 1000) print 1; else print 0}')
+                if [ "$var_check" != "1" ]; then variance="NULL"; fi
+            fi
+        fi
+    fi
+    
+    # Store in archive
+    sqlite3 "$ARCHIVE_DB_FILE" \
+        "INSERT OR REPLACE INTO advanced_statistics_daily (date, usage_variance) 
+         VALUES ('$today_date', $variance);" 2>/dev/null
+}
+
+# 8. Calculate Peak vs Off-Peak Ratio
+calculate_peak_offpeak_ratio() {
+    local today_date=$(date +%Y-%m-%d)
+    local ratio="NULL"
+    
+    if [ ! -f "$ARCHIVE_DB_FILE" ]; then
+        return
+    fi
+    
+    # Get peak hour usage and average of quiet hours
+    local peak_data=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+        "SELECT MAX(total_bytes) as peak,
+         (SELECT AVG(total_bytes) FROM hourly_usage_patterns 
+          WHERE date = '$today_date' AND total_bytes > 0 
+          AND total_bytes < (SELECT MAX(total_bytes) FROM hourly_usage_patterns WHERE date = '$today_date')) as quiet_avg
+         FROM hourly_usage_patterns 
+         WHERE date = '$today_date' AND total_bytes > 0" 2>/dev/null)
+    
+    if [ -n "$peak_data" ] && [ "$peak_data" != "," ]; then
+        local peak=$(echo "$peak_data" | cut -d, -f1)
+        local quiet_avg=$(echo "$peak_data" | cut -d, -f2)
+        
+        # Calculate ratio (peak/quiet_avg)
+        # Use awk for floating point comparison
+        local quiet_check=$(awk -v q="$quiet_avg" 'BEGIN {if (q > 0) print 1; else print 0}')
+        if [ -n "$peak" ] && [ "$peak" != "" ] && [ "$peak" != "NULL" ] && \
+           [ -n "$quiet_avg" ] && [ "$quiet_avg" != "" ] && [ "$quiet_avg" != "NULL" ] && \
+           [ "$quiet_avg" != "0" ] && [ "$quiet_check" = "1" ]; then
+            ratio=$(awk -v p="$peak" -v q="$quiet_avg" 'BEGIN {
+                if (q > 0) printf "%.2f", p/q
+                else print "NULL"
+            }')
+            
+            # Validate range (> 0, reasonable upper bound)
+            if [ -n "$ratio" ] && [ "$ratio" != "NULL" ]; then
+                local ratio_check=$(awk -v r="$ratio" 'BEGIN {if (r > 0 && r < 1000) print 1; else print 0}')
+                if [ "$ratio_check" != "1" ]; then ratio="NULL"; fi
+            fi
+        fi
+    fi
+    
+    # Store in archive
+    sqlite3 "$ARCHIVE_DB_FILE" \
+        "INSERT OR REPLACE INTO advanced_statistics_daily (date, peak_offpeak_ratio) 
+         VALUES ('$today_date', $ratio);" 2>/dev/null
+}
+
+# 9. Calculate Connection Reliability (Percentage of hours with valid ConnMon data)
+calculate_connection_reliability() {
+    local today_date=$(date +%Y-%m-%d)
+    local reliability="NULL"
+    
+    if [ ! -f "$ARCHIVE_DB_FILE" ]; then
+        return
+    fi
+    
+    # Count hours with valid ConnMon data vs total hours with any data
+    local total_hours=$(sqlite3 "$ARCHIVE_DB_FILE" \
+        "SELECT COUNT(*) FROM connmon_quality_patterns WHERE date = '$today_date'" 2>/dev/null)
+    
+    local valid_hours=$(sqlite3 "$ARCHIVE_DB_FILE" \
+        "SELECT COUNT(*) FROM connmon_quality_patterns WHERE date = '$today_date' AND avg_quality IS NOT NULL" 2>/dev/null)
+    
+    local reliability_data=""
+    if [ -n "$valid_hours" ] && [ -n "$total_hours" ]; then
+        reliability_data="${valid_hours},${total_hours}"
+    fi
+    
+    if [ -n "$reliability_data" ] && [ "$reliability_data" != "," ] && [ -n "$valid_hours" ] && [ -n "$total_hours" ]; then
+        local valid=$valid_hours
+        local total=$total_hours
+        
+        # Calculate percentage
+        # Use awk for floating point comparison
+        local total_check=$(awk -v t="$total" 'BEGIN {if (t > 0) print 1; else print 0}')
+        if [ -n "$valid" ] && [ "$valid" != "" ] && [ "$valid" != "NULL" ] && \
+           [ -n "$total" ] && [ "$total" != "" ] && [ "$total" != "NULL" ] && \
+           [ "$total" != "0" ] && [ "$total_check" = "1" ]; then
+            reliability=$(awk -v v="$valid" -v t="$total" 'BEGIN {
+                if (t > 0) printf "%.2f", (v/t)*100
+                else print "NULL"
+            }')
+            
+            # Validate range (0-100)
+            if [ -n "$reliability" ] && [ "$reliability" != "NULL" ]; then
+                local rel_check=$(awk -v r="$reliability" 'BEGIN {if (r >= 0 && r <= 100) print 1; else print 0}')
+                if [ "$rel_check" != "1" ]; then reliability="NULL"; fi
+            fi
+        fi
+    fi
+    
+    # Store in archive
+    sqlite3 "$ARCHIVE_DB_FILE" \
+        "INSERT OR REPLACE INTO advanced_statistics_daily (date, connection_reliability_pct) 
+         VALUES ('$today_date', $reliability);" 2>/dev/null
+}
+
+# 10. Calculate Ping Consistency (Coefficient of variation for ping)
+calculate_ping_consistency() {
+    local today_date=$(date +%Y-%m-%d)
+    local consistency="NULL"
+    
+    if [ ! -f "$ARCHIVE_DB_FILE" ]; then
+        return
+    fi
+    
+    # Get mean and standard deviation of ping
+    local ping_stats=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+        "SELECT AVG(avg_ping),
+         SQRT(AVG((avg_ping - (SELECT AVG(avg_ping) FROM connmon_quality_patterns WHERE date = '$today_date' AND avg_ping IS NOT NULL)) * 
+                  (avg_ping - (SELECT AVG(avg_ping) FROM connmon_quality_patterns WHERE date = '$today_date' AND avg_ping IS NOT NULL))))
+         FROM connmon_quality_patterns 
+         WHERE date = '$today_date' AND avg_ping IS NOT NULL" 2>/dev/null)
+    
+    if [ -n "$ping_stats" ] && [ "$ping_stats" != "," ]; then
+        local mean=$(echo "$ping_stats" | cut -d, -f1)
+        local stddev=$(echo "$ping_stats" | cut -d, -f2)
+        
+        # Calculate coefficient of variation
+        # Use awk for floating point comparison
+        local mean_check=$(awk -v m="$mean" 'BEGIN {if (m > 0) print 1; else print 0}')
+        if [ -n "$mean" ] && [ "$mean" != "" ] && [ "$mean" != "NULL" ] && \
+           [ -n "$stddev" ] && [ "$stddev" != "" ] && [ "$stddev" != "NULL" ] && \
+           [ "$mean" != "0" ] && [ "$mean_check" = "1" ]; then
+            consistency=$(awk -v s="$stddev" -v m="$mean" 'BEGIN {
+                if (m > 0) printf "%.4f", s/m
+                else print "NULL"
+            }')
+            
+            # Validate range (>= 0, reasonable upper bound)
+            if [ -n "$consistency" ] && [ "$consistency" != "NULL" ]; then
+                local cons_check=$(awk -v c="$consistency" 'BEGIN {if (c >= 0 && c < 1000) print 1; else print 0}')
+                if [ "$cons_check" != "1" ]; then consistency="NULL"; fi
+            fi
+        fi
+    fi
+    
+    # Store in archive
+    sqlite3 "$ARCHIVE_DB_FILE" \
+        "INSERT OR REPLACE INTO advanced_statistics_daily (date, ping_consistency) 
+         VALUES ('$today_date', $consistency);" 2>/dev/null
+}
+
+# 11. Calculate Jitter Consistency (Coefficient of variation for jitter)
+calculate_jitter_consistency() {
+    local today_date=$(date +%Y-%m-%d)
+    local consistency="NULL"
+    
+    if [ ! -f "$ARCHIVE_DB_FILE" ]; then
+        return
+    fi
+    
+    # Get mean and standard deviation of jitter
+    local jitter_stats=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+        "SELECT AVG(avg_jitter),
+         SQRT(AVG((avg_jitter - (SELECT AVG(avg_jitter) FROM connmon_quality_patterns WHERE date = '$today_date' AND avg_jitter IS NOT NULL)) * 
+                  (avg_jitter - (SELECT AVG(avg_jitter) FROM connmon_quality_patterns WHERE date = '$today_date' AND avg_jitter IS NOT NULL))))
+         FROM connmon_quality_patterns 
+         WHERE date = '$today_date' AND avg_jitter IS NOT NULL" 2>/dev/null)
+    
+    if [ -n "$jitter_stats" ] && [ "$jitter_stats" != "," ]; then
+        local mean=$(echo "$jitter_stats" | cut -d, -f1)
+        local stddev=$(echo "$jitter_stats" | cut -d, -f2)
+        
+        # Calculate coefficient of variation
+        # Use awk for floating point comparison
+        local mean_check=$(awk -v m="$mean" 'BEGIN {if (m > 0) print 1; else print 0}')
+        if [ -n "$mean" ] && [ "$mean" != "" ] && [ "$mean" != "NULL" ] && \
+           [ -n "$stddev" ] && [ "$stddev" != "" ] && [ "$stddev" != "NULL" ] && \
+           [ "$mean" != "0" ] && [ "$mean_check" = "1" ]; then
+            consistency=$(awk -v s="$stddev" -v m="$mean" 'BEGIN {
+                if (m > 0) printf "%.4f", s/m
+                else print "NULL"
+            }')
+            
+            # Validate range (>= 0, reasonable upper bound)
+            if [ -n "$consistency" ] && [ "$consistency" != "NULL" ]; then
+                local cons_check=$(awk -v c="$consistency" 'BEGIN {if (c >= 0 && c < 1000) print 1; else print 0}')
+                if [ "$cons_check" != "1" ]; then consistency="NULL"; fi
+            fi
+        fi
+    fi
+    
+    # Store in archive
+    sqlite3 "$ARCHIVE_DB_FILE" \
+        "INSERT OR REPLACE INTO advanced_statistics_daily (date, jitter_consistency) 
+         VALUES ('$today_date', $consistency);" 2>/dev/null
+}
+
+# 12. Archive all advanced statistics (called from archive_daily_data)
+archive_advanced_statistics() {
+    # Call all calculation functions
+    calculate_quality_distribution
+    calculate_bandwidth_efficiency
+    calculate_connection_stability
+    calculate_quality_consistency
+    calculate_worst_quality_period
+    calculate_active_hours
+    calculate_usage_variance
+    calculate_peak_offpeak_ratio
+    calculate_connection_reliability
+    calculate_ping_consistency
+    calculate_jitter_consistency
+}
+
+# --- NEW: Function to get advanced statistics from archive ---
+# Uses user_archive.db for all historical statistical analysis
+get_advanced_statistics() {
+    local __result_var_ratio=$1
+    local __result_var_rate=$2
+    local __result_var_ping=$3
+    local __result_var_jitter=$4
+    local __result_var_load=$5
+    
+    local today_date=$(date +%Y-%m-%d)
+    local midnight_today=$(date -d "00:00:00" +%s)
+    
+    # Initialize defaults
+    eval $__result_var_ratio="'N/A'"
+    eval $__result_var_rate="'N/A'"
+    eval $__result_var_ping="'N/A'"
+    eval $__result_var_jitter="'N/A'"
+    eval $__result_var_load="'N/A'"
+    
+    # 1. Traffic Ratio (Down/Up)
+    # Best practice: Calculate ratio from live DB for today's traffic
+    if [ -f "$LIVE_DB_FILE" ]; then
+        local traffic_data=$(sqlite3 -separator ',' "$LIVE_DB_FILE" \
+            "SELECT COALESCE(SUM(rx), 0), COALESCE(SUM(tx), 0) FROM traffic WHERE timestamp >= $midnight_today" 2>/dev/null)
+            
+        if [ -n "$traffic_data" ] && [ "$traffic_data" != "," ]; then
+            local rx=$(echo "$traffic_data" | cut -d, -f1)
+            local tx=$(echo "$traffic_data" | cut -d, -f2)
+            
+            # Validate and default to 0 if empty or NULL
+            if [ -z "$rx" ] || [ "$rx" = "" ] || [ "$rx" = "NULL" ]; then rx=0; fi
+            if [ -z "$tx" ] || [ "$tx" = "" ] || [ "$tx" = "NULL" ]; then tx=0; fi
+            
+            local total=$(awk -v r="$rx" -v t="$tx" 'BEGIN {
+                r_num = r + 0
+                t_num = t + 0
+                printf "%.0f", r_num + t_num
+            }')
+            
+            # Only calculate ratio if we have meaningful traffic (at least 1KB)
+            # Use awk for floating point comparison
+            local total_check=$(awk -v t="$total" 'BEGIN {if (t >= 1024) print 1; else print 0}')
+            if [ -n "$total" ] && [ "$total" != "" ] && [ "$total" != "0" ] && [ "$total_check" = "1" ]; then
+                local rx_pct=$(awk -v r="$rx" -v tot="$total" 'BEGIN {
+                    if (tot > 0) printf "%.0f", (r/tot)*100
+                    else print 0
+                }')
+                local tx_pct=$(awk -v t="$tx" -v tot="$total" 'BEGIN {
+                    if (tot > 0) printf "%.0f", (t/tot)*100
+                    else print 0
+                }')
+                
+                # Validate percentages sum to 100 (with small tolerance for rounding)
+                # Use awk for floating point comparison
+                local sum_check=$(awk -v r="$rx_pct" -v t="$tx_pct" 'BEGIN {printf "%.0f", r + t}')
+                local sum_range_check=$(awk -v s="$sum_check" 'BEGIN {if (s >= 99 && s <= 101) print 1; else print 0}')
+                if [ "$sum_range_check" = "1" ]; then
+                    # Get 7-day average for comparison
+                    # Note: We don't store separate rx/tx in daily_usage, so we can't compare ratio history directly without schema change.
+                    # Skipping ratio comparison for now to avoid complexity/schema changes.
+                    
+                    eval $__result_var_ratio="'Download: ${rx_pct}% | Upload: ${tx_pct}%'"
+                fi
+            fi
+        fi
+    fi
+    
+    # 2. Hourly Data Rate (Current Pace)
+    # Use Total Bytes Today / Hours Elapsed
+    # Best practice: Count actual hours with data from hourly_usage_patterns for accuracy
+    # This avoids issues with early-day calculations and provides more accurate rates
+    if [ -f "$ARCHIVE_DB_FILE" ]; then
+        # Count hours that have data (more accurate than using current hour)
+        local hours_with_data=$(sqlite3 "$ARCHIVE_DB_FILE" \
+            "SELECT COUNT(*) FROM hourly_usage_patterns WHERE date = '$today_date' AND total_bytes > 0" 2>/dev/null)
+        
+        # Fallback: Calculate actual elapsed hours if no data yet
+        local hours_elapsed=1
+        if [ -n "$hours_with_data" ] && [ "$hours_with_data" != "" ] && [ "$hours_with_data" != "0" ]; then
+            hours_elapsed=$hours_with_data
+        else
+            # If no hourly data yet, calculate from current time
+            local current_hour=$(date +%H)
+            local current_minute=$(date +%M)
+            # Calculate actual hours elapsed (including partial hour as full hour for rate calculation)
+            hours_elapsed=$(awk -v h="$current_hour" -v m="$current_minute" 'BEGIN {
+                if (h == 0 && m < 5) print 1  # Very early morning, assume 1 hour
+                else print h + 1
+            }')
+        fi
+        
+        # Ensure minimum of 1 hour to avoid division by zero
+        if [ -z "$hours_elapsed" ] || [ "$hours_elapsed" = "0" ]; then
+            hours_elapsed=1
+        fi
+        
+        local total_bytes=$(sqlite3 "$ARCHIVE_DB_FILE" "SELECT SUM(total_bytes) FROM daily_usage WHERE date = '$today_date'" 2>/dev/null)
+        
+        if [ -n "$total_bytes" ] && [ "$total_bytes" != "" ] && [ "$total_bytes" != "0" ]; then
+             local avg_rate=$(awk -v b="$total_bytes" -v h="$hours_elapsed" 'BEGIN {
+                 if (h > 0) printf "%.0f", b / h
+                 else print 0
+             }')
+             local rate_human=$(bytes_to_human $avg_rate)
+             
+             # Get 7-day average rate from weekly_averages table
+             local seven_day_avg=$(sqlite3 "$ARCHIVE_DB_FILE" \
+                "SELECT avg_bytes_7d FROM weekly_averages WHERE date = '$today_date'" 2>/dev/null)
+             
+             local comparison_str=""
+             if [ -n "$seven_day_avg" ] && [ "$seven_day_avg" != "" ] && [ "$seven_day_avg" != "NULL" ] && [ "$seven_day_avg" != "0" ]; then
+                 local seven_day_rate=$(awk -v d="$seven_day_avg" 'BEGIN {printf "%.0f", d / 24}')
+                 local seven_day_human=$(bytes_to_human $seven_day_rate)
+                 comparison_str=" (vs ${seven_day_human})"
+             fi
+             
+             eval $__result_var_rate="'$rate_human/hour${comparison_str}'"
+        fi
+    fi
+    
+    # 3. Peak vs Avg Ping & Jitter
+    # Best practice: Only show stats if we have sufficient data (at least 2 hours) for meaningful comparison
+    if [ -f "$ARCHIVE_DB_FILE" ]; then
+        # Check if we have enough data points for meaningful stats
+        local hours_count=$(sqlite3 "$ARCHIVE_DB_FILE" \
+            "SELECT COUNT(*) FROM connmon_quality_patterns WHERE date = '$today_date' AND avg_ping IS NOT NULL" 2>/dev/null)
+        
+        if [ -n "$hours_count" ] && [ "$hours_count" != "" ] && [ "$hours_count" != "0" ]; then
+            local conn_stats=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+                "SELECT MAX(avg_ping), AVG(avg_ping), MAX(avg_jitter), AVG(avg_jitter) FROM connmon_quality_patterns WHERE date = '$today_date' AND avg_ping IS NOT NULL" 2>/dev/null)
+                
+            if [ -n "$conn_stats" ] && [ "$conn_stats" != "," ] && [ "$conn_stats" != ",,," ]; then
+                local max_ping=$(echo "$conn_stats" | cut -d, -f1)
+                local avg_ping=$(echo "$conn_stats" | cut -d, -f2)
+                local max_jitter=$(echo "$conn_stats" | cut -d, -f3)
+                local avg_jitter=$(echo "$conn_stats" | cut -d, -f4)
+                
+                # Validate that we have numeric values
+                if [ -n "$max_ping" ] && [ "$max_ping" != "" ] && [ "$max_ping" != "NULL" ] && \
+                   [ -n "$avg_ping" ] && [ "$avg_ping" != "" ] && [ "$avg_ping" != "NULL" ]; then
+                    # Get 7-day averages for comparison from weekly_averages table
+                    local seven_day_stats=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+                        "SELECT avg_ping_7d, avg_jitter_7d FROM weekly_averages WHERE date = '$today_date'" 2>/dev/null)
+                    local seven_day_ping=""
+                    local seven_day_jitter=""
+                    if [ -n "$seven_day_stats" ] && [ "$seven_day_stats" != "," ]; then
+                        seven_day_ping=$(echo "$seven_day_stats" | cut -d, -f1)
+                        seven_day_jitter=$(echo "$seven_day_stats" | cut -d, -f2)
+                    fi
+
+                    # Format ping stats with validation
+                    local max_fmt=$(printf "%.0f" "$max_ping" 2>/dev/null || echo "0")
+                    local avg_fmt=$(printf "%.0f" "$avg_ping" 2>/dev/null || echo "0")
+                    
+                    local ping_comp=""
+                    if [ -n "$seven_day_ping" ] && [ "$seven_day_ping" != "" ] && [ "$seven_day_ping" != "NULL" ]; then
+                        local s_ping_fmt=$(printf "%.0f" "$seven_day_ping" 2>/dev/null || echo "0")
+                        ping_comp=" (vs ${s_ping_fmt}ms)"
+                    fi
+                    
+                    eval $__result_var_ping="'Avg: ${avg_fmt}ms${ping_comp} | Peak: ${max_fmt}ms'"
+                fi
+                
+                # Format jitter stats with validation
+                if [ -n "$max_jitter" ] && [ "$max_jitter" != "" ] && [ "$max_jitter" != "NULL" ] && \
+                   [ -n "$avg_jitter" ] && [ "$avg_jitter" != "" ] && [ "$avg_jitter" != "NULL" ]; then
+                    local max_j_fmt=$(printf "%.1f" "$max_jitter" 2>/dev/null || echo "0.0")
+                    local avg_j_fmt=$(printf "%.1f" "$avg_jitter" 2>/dev/null || echo "0.0")
+                    
+                    local jitter_comp=""
+                    if [ -n "$seven_day_jitter" ] && [ "$seven_day_jitter" != "" ] && [ "$seven_day_jitter" != "NULL" ]; then
+                        local s_jitter_fmt=$(printf "%.1f" "$seven_day_jitter" 2>/dev/null || echo "0.0")
+                        jitter_comp=" (vs ${s_jitter_fmt}ms)"
+                    fi
+                    
+                    eval $__result_var_jitter="'Avg: ${avg_j_fmt}ms${jitter_comp} | Peak: ${max_j_fmt}ms'"
+                fi
+            fi
+        fi
+    fi
+    
+    # 4. Network Load Factor (Avg / Peak)
+    # Best practice: Calculate load factor only with sufficient data points for accuracy
+    if [ -f "$ARCHIVE_DB_FILE" ]; then
+        # Check if we have enough data points (hours) to make this meaningful
+        # If only 1 or 2 hours of data, "Avg" will be close to "Peak", misleadingly showing "Constant"
+        local hours_count=$(sqlite3 "$ARCHIVE_DB_FILE" \
+            "SELECT COUNT(*) FROM hourly_usage_patterns WHERE date = '$today_date' AND total_bytes > 0" 2>/dev/null)
+        
+        if [ -n "$hours_count" ] && [ "$hours_count" != "" ] && [ "$hours_count" != "0" ] && [ "$hours_count" -ge 3 ]; then
+            local load_stats=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+                "SELECT MAX(total_bytes), AVG(total_bytes) FROM hourly_usage_patterns WHERE date = '$today_date' AND total_bytes > 0" 2>/dev/null)
+                
+            if [ -n "$load_stats" ] && [ "$load_stats" != "," ]; then
+                local max_bytes=$(echo "$load_stats" | cut -d, -f1)
+                local avg_bytes=$(echo "$load_stats" | cut -d, -f2)
+                
+                # Validate that we have meaningful data
+                if [ -n "$max_bytes" ] && [ "$max_bytes" != "0" ] && [ "$max_bytes" != "" ] && [ "$max_bytes" != "NULL" ] && \
+                   [ -n "$avg_bytes" ] && [ "$avg_bytes" != "" ] && [ "$avg_bytes" != "NULL" ]; then
+                    # Calculate load factor with division by zero protection
+                    local load_factor=$(awk -v a="$avg_bytes" -v m="$max_bytes" 'BEGIN {
+                        if (m > 0) printf "%.0f", (a/m)*100
+                        else print 0
+                    }')
+                    
+                    # Validate load_factor is within reasonable range (0-100)
+                    # Use awk for floating point comparison
+                    local load_range_check=$(awk -v l="$load_factor" 'BEGIN {if (l >= 0 && l <= 100) print 1; else print 0}')
+                    if [ -n "$load_factor" ] && [ "$load_factor" != "" ] && [ "$load_range_check" = "1" ]; then
+                        # 100% = Constant load, Low % = Bursty
+                        local load_desc=""
+                        local load_80_check=$(awk -v l="$load_factor" 'BEGIN {if (l >= 80) print 1; else print 0}')
+                        local load_50_check=$(awk -v l="$load_factor" 'BEGIN {if (l >= 50) print 1; else print 0}')
+                        if [ "$load_80_check" = "1" ]; then load_desc="Constant";
+                        elif [ "$load_50_check" = "1" ]; then load_desc="Balanced";
+                        else load_desc="Bursty"; fi
+                        
+                        eval $__result_var_load="'${load_factor}% ($load_desc)'"
+                    fi
+                fi
+            fi
+        elif [ -n "$hours_count" ] && [ "$hours_count" != "" ] && [ "$hours_count" != "0" ]; then
+            # Less than 3 hours of data - show collecting message
+            eval $__result_var_load="'Collecting Data...'"
+        fi
+    fi
+}
+
+# --- NEW: Function to get extended advanced statistics with 7-day comparisons ---
+# Uses simple, user-friendly labels and includes 7-day averages for context
+get_extended_advanced_statistics() {
+    local today_date=$(date +%Y-%m-%d)
+    
+    # Initialize all result variables to N/A
+    local __result_var_quality_breakdown=$1
+    local __result_var_speed_efficiency=$2
+    local __result_var_connection_stability=$3
+    local __result_var_quality_consistency=$4
+    local __result_var_worst_hour=$5
+    local __result_var_active_hours=$6
+    local __result_var_usage_consistency=$7
+    local __result_var_peak_quiet=$8
+    local __result_var_data_reliability=$9
+    # Access parameters 10 and 11 directly (bash supports ${10}, ${11})
+    local __result_var_ping_consistency="${10}"
+    local __result_var_jitter_consistency="${11}"
+    
+    eval $__result_var_quality_breakdown="'N/A'"
+    eval $__result_var_speed_efficiency="'N/A'"
+    eval $__result_var_connection_stability="'N/A'"
+    eval $__result_var_quality_consistency="'N/A'"
+    eval $__result_var_worst_hour="'N/A'"
+    eval $__result_var_active_hours="'N/A'"
+    eval $__result_var_usage_consistency="'N/A'"
+    eval $__result_var_peak_quiet="'N/A'"
+    eval $__result_var_data_reliability="'N/A'"
+    eval $__result_var_ping_consistency="'N/A'"
+    eval $__result_var_jitter_consistency="'N/A'"
+    
+    if [ ! -f "$ARCHIVE_DB_FILE" ]; then
+        return
+    fi
+    
+    # Get today's statistics
+    local today_stats=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+        "SELECT 
+         quality_distribution_excellent, quality_distribution_good, quality_distribution_poor,
+         bandwidth_efficiency_pct, connection_stability_score, quality_consistency,
+         worst_quality_hour, active_hours_count, usage_variance,
+         peak_offpeak_ratio, connection_reliability_pct, ping_consistency, jitter_consistency
+         FROM advanced_statistics_daily 
+         WHERE date = '$today_date'" 2>/dev/null)
+    
+    # Get 7-day, 30-day, and 90-day averages for comparison
+    local weekly_stats=$(sqlite3 -separator ',' "$ARCHIVE_DB_FILE" \
+        "SELECT 
+         quality_dist_excellent_7d, quality_dist_good_7d, quality_dist_poor_7d,
+         bandwidth_efficiency_7d, connection_stability_7d, quality_consistency_7d,
+         active_hours_7d, usage_variance_7d, peak_offpeak_ratio_7d,
+         connection_reliability_7d, ping_consistency_7d, jitter_consistency_7d,
+         quality_dist_excellent_30d, quality_dist_good_30d, quality_dist_poor_30d,
+         bandwidth_efficiency_30d, connection_stability_30d, quality_consistency_30d,
+         active_hours_30d, usage_variance_30d, peak_offpeak_ratio_30d,
+         connection_reliability_30d, ping_consistency_30d, jitter_consistency_30d,
+         quality_dist_excellent_90d, quality_dist_good_90d, quality_dist_poor_90d,
+         bandwidth_efficiency_90d, connection_stability_90d, quality_consistency_90d,
+         active_hours_90d, usage_variance_90d, peak_offpeak_ratio_90d,
+         connection_reliability_90d, ping_consistency_90d, jitter_consistency_90d
+         FROM weekly_averages 
+         WHERE date = '$today_date'" 2>/dev/null)
+    
+    # Always parse 7-day and 30-day trends (even if today's stats are missing)
+    local exc_7d=""
+    local good_7d=""
+    local poor_7d=""
+    local eff_7d=""
+    local stability_7d=""
+    local q_cons_7d=""
+    local active_7d=""
+    local usage_var_7d=""
+    local peak_ratio_7d=""
+    local reliability_7d=""
+    local ping_cons_7d=""
+    local jitter_cons_7d=""
+    local exc_30d=""
+    local good_30d=""
+    local poor_30d=""
+    local eff_30d=""
+    local stability_30d=""
+    local q_cons_30d=""
+    local active_30d=""
+    local usage_var_30d=""
+    local peak_ratio_30d=""
+    local reliability_30d=""
+    local ping_cons_30d=""
+    local jitter_cons_30d=""
+    
+    if [ -n "$weekly_stats" ] && [ "$weekly_stats" != "," ] && [ "$weekly_stats" != ",,,,,,,,,,," ]; then
+        # Parse 7-day averages (fields 1-12)
+        exc_7d=$(echo "$weekly_stats" | cut -d, -f1)
+        good_7d=$(echo "$weekly_stats" | cut -d, -f2)
+        poor_7d=$(echo "$weekly_stats" | cut -d, -f3)
+        eff_7d=$(echo "$weekly_stats" | cut -d, -f4)
+        stability_7d=$(echo "$weekly_stats" | cut -d, -f5)
+        q_cons_7d=$(echo "$weekly_stats" | cut -d, -f6)
+        active_7d=$(echo "$weekly_stats" | cut -d, -f7)
+        usage_var_7d=$(echo "$weekly_stats" | cut -d, -f8)
+        peak_ratio_7d=$(echo "$weekly_stats" | cut -d, -f9)
+        reliability_7d=$(echo "$weekly_stats" | cut -d, -f10)
+        ping_cons_7d=$(echo "$weekly_stats" | cut -d, -f11)
+        jitter_cons_7d=$(echo "$weekly_stats" | cut -d, -f12)
+        # Parse 30-day averages (fields 13-24)
+        exc_30d=$(echo "$weekly_stats" | cut -d, -f13)
+        good_30d=$(echo "$weekly_stats" | cut -d, -f14)
+        poor_30d=$(echo "$weekly_stats" | cut -d, -f15)
+        eff_30d=$(echo "$weekly_stats" | cut -d, -f16)
+        stability_30d=$(echo "$weekly_stats" | cut -d, -f17)
+        q_cons_30d=$(echo "$weekly_stats" | cut -d, -f18)
+        active_30d=$(echo "$weekly_stats" | cut -d, -f19)
+        usage_var_30d=$(echo "$weekly_stats" | cut -d, -f20)
+        peak_ratio_30d=$(echo "$weekly_stats" | cut -d, -f21)
+        reliability_30d=$(echo "$weekly_stats" | cut -d, -f22)
+        ping_cons_30d=$(echo "$weekly_stats" | cut -d, -f23)
+        jitter_cons_30d=$(echo "$weekly_stats" | cut -d, -f24)
+        # Parse 90-day averages (fields 25-36)
+        exc_90d=$(echo "$weekly_stats" | cut -d, -f25)
+        good_90d=$(echo "$weekly_stats" | cut -d, -f26)
+        poor_90d=$(echo "$weekly_stats" | cut -d, -f27)
+        eff_90d=$(echo "$weekly_stats" | cut -d, -f28)
+        stability_90d=$(echo "$weekly_stats" | cut -d, -f29)
+        q_cons_90d=$(echo "$weekly_stats" | cut -d, -f30)
+        active_90d=$(echo "$weekly_stats" | cut -d, -f31)
+        usage_var_90d=$(echo "$weekly_stats" | cut -d, -f32)
+        peak_ratio_90d=$(echo "$weekly_stats" | cut -d, -f33)
+        reliability_90d=$(echo "$weekly_stats" | cut -d, -f34)
+        ping_cons_90d=$(echo "$weekly_stats" | cut -d, -f35)
+        jitter_cons_90d=$(echo "$weekly_stats" | cut -d, -f36)
+    else
+        # Initialize 90-day variables to empty
+        exc_90d=""
+        good_90d=""
+        poor_90d=""
+        eff_90d=""
+        stability_90d=""
+        q_cons_90d=""
+        active_90d=""
+        usage_var_90d=""
+        peak_ratio_90d=""
+        reliability_90d=""
+        ping_cons_90d=""
+        jitter_cons_90d=""
+    fi
+    
+    if [ -n "$today_stats" ] && [ "$today_stats" != "," ] && [ "$today_stats" != ",,,,,,,,,,," ]; then
+        # Parse today's values
+        local exc=$(echo "$today_stats" | cut -d, -f1)
+        local good=$(echo "$today_stats" | cut -d, -f2)
+        local poor=$(echo "$today_stats" | cut -d, -f3)
+        local eff=$(echo "$today_stats" | cut -d, -f4)
+        local stability=$(echo "$today_stats" | cut -d, -f5)
+        local q_cons=$(echo "$today_stats" | cut -d, -f6)
+        local worst_h=$(echo "$today_stats" | cut -d, -f7)
+        local active=$(echo "$today_stats" | cut -d, -f8)
+        local usage_var=$(echo "$today_stats" | cut -d, -f9)
+        local peak_ratio=$(echo "$today_stats" | cut -d, -f10)
+        local reliability=$(echo "$today_stats" | cut -d, -f11)
+        local ping_cons=$(echo "$today_stats" | cut -d, -f12)
+        local jitter_cons=$(echo "$today_stats" | cut -d, -f13)
+    fi
+    
+    # Always format output with trends (even if today's stats are missing)
+    # 1. Quality Breakdown (Excellent/Good/Poor hours)
+    # Always show trends even if today's data is missing
+    local exc=""
+    local good=""
+    local poor=""
+    if [ -n "$today_stats" ] && [ "$today_stats" != "," ] && [ "$today_stats" != ",,,,,,,,,,," ]; then
+        exc=$(echo "$today_stats" | cut -d, -f1)
+        good=$(echo "$today_stats" | cut -d, -f2)
+        poor=$(echo "$today_stats" | cut -d, -f3)
+    fi
+    
+    # Format 7-day, 30-day, and 90-day trends with proper units
+    local exc_7d_str="N/A"
+    local exc_30d_str="N/A"
+    local exc_90d_str="N/A"
+    if [ -n "$exc_7d" ] && [ "$exc_7d" != "" ] && [ "$exc_7d" != "NULL" ]; then
+        local val=$(printf "%.0f" "$exc_7d" 2>/dev/null || echo "N/A")
+        if [ "$val" != "N/A" ]; then exc_7d_str="${val}h"; else exc_7d_str="N/A"; fi
+    fi
+    if [ -n "$exc_30d" ] && [ "$exc_30d" != "" ] && [ "$exc_30d" != "NULL" ]; then
+        local val=$(printf "%.0f" "$exc_30d" 2>/dev/null || echo "N/A")
+        if [ "$val" != "N/A" ]; then exc_30d_str="${val}h"; else exc_30d_str="N/A"; fi
+    fi
+    if [ -n "$exc_90d" ] && [ "$exc_90d" != "" ] && [ "$exc_90d" != "NULL" ]; then
+        local val=$(printf "%.0f" "$exc_90d" 2>/dev/null || echo "N/A")
+        if [ "$val" != "N/A" ]; then exc_90d_str="${val}h"; else exc_90d_str="N/A"; fi
+    fi
+    
+    # Format today's values if available
+    if [ -n "$exc" ] && [ "$exc" != "" ] && [ "$exc" != "NULL" ] && \
+       [ -n "$good" ] && [ "$good" != "" ] && [ "$good" != "NULL" ] && \
+       [ -n "$poor" ] && [ "$poor" != "" ] && [ "$poor" != "NULL" ]; then
+        local total_hours=$(awk -v e="$exc" -v g="$good" -v p="$poor" 'BEGIN {printf "%.0f", e + g + p}')
+        # Use awk for floating point comparison
+        local total_check=$(awk -v t="$total_hours" 'BEGIN {if (t > 0) print 1; else print 0}')
+        if [ "$total_check" = "1" ]; then
+            local exc_pct=$(awk -v e="$exc" -v t="$total_hours" 'BEGIN {if (t > 0) printf "%.0f", (e/t)*100; else print 0}')
+            eval $__result_var_quality_breakdown="'Exc: <code>${exc}h</code> (<code>${exc_pct}%</code>) | 7d:<code>${exc_7d_str}</code> 30d:<code>${exc_30d_str}</code> 90d:<code>${exc_90d_str}</code> | Good:<code>${good}h</code> Poor:<code>${poor}h</code>'"
+        else
+            eval $__result_var_quality_breakdown="'Exc: N/A | 7d:<code>${exc_7d_str}</code> 30d:<code>${exc_30d_str}</code> 90d:<code>${exc_90d_str}</code> | Good:N/A Poor:N/A'"
+        fi
+    else
+        # Show trends even if today's data is missing
+        eval $__result_var_quality_breakdown="'Exc: N/A | 7d:<code>${exc_7d_str}</code> 30d:<code>${exc_30d_str}</code> 90d:<code>${exc_90d_str}</code> | Good:N/A Poor:N/A'"
+    fi
+        
+    # 2. Speed Efficiency (Bandwidth efficiency percentage)
+    local eff=""
+    if [ -n "$today_stats" ] && [ "$today_stats" != "," ] && [ "$today_stats" != ",,,,,,,,,,," ]; then
+        eff=$(echo "$today_stats" | cut -d, -f4)
+    fi
+    local eff_fmt="N/A"
+    if [ -n "$eff" ] && [ "$eff" != "" ] && [ "$eff" != "NULL" ]; then
+        eff_fmt=$(printf "%.1f" "$eff" 2>/dev/null || echo "N/A")
+    fi
+    local comp_7d="N/A"
+    local comp_30d="N/A"
+    if [ -n "$eff_7d" ] && [ "$eff_7d" != "" ] && [ "$eff_7d" != "NULL" ]; then
+        comp_7d=$(printf "%.1f" "$eff_7d" 2>/dev/null || echo "N/A")
+    fi
+    if [ -n "$eff_30d" ] && [ "$eff_30d" != "" ] && [ "$eff_30d" != "NULL" ]; then
+        comp_30d=$(printf "%.1f" "$eff_30d" 2>/dev/null || echo "N/A")
+    fi
+    # Format: add % only if value is not N/A
+    local eff_display="${eff_fmt}"
+    if [ "$eff_fmt" != "N/A" ]; then eff_display="${eff_fmt}%"; fi
+    local comp_7d_display="${comp_7d}"
+    if [ "$comp_7d" != "N/A" ]; then comp_7d_display="${comp_7d}%"; fi
+    local comp_30d_display="${comp_30d}"
+    if [ "$comp_30d" != "N/A" ]; then comp_30d_display="${comp_30d}%"; fi
+    local comp_90d="N/A"
+    if [ -n "$eff_90d" ] && [ "$eff_90d" != "" ] && [ "$eff_90d" != "NULL" ]; then
+        comp_90d=$(printf "%.1f" "$eff_90d" 2>/dev/null || echo "N/A")
+    fi
+    local comp_90d_display="${comp_90d}"
+    if [ "$comp_90d" != "N/A" ]; then comp_90d_display="${comp_90d}%"; fi
+    eval $__result_var_speed_efficiency="'${eff_display} | 7d:${comp_7d_display} 30d:${comp_30d_display} 90d:${comp_90d_display}'"
+    
+    # 3. Connection Stability (Stability score)
+    local stability=""
+    if [ -n "$today_stats" ] && [ "$today_stats" != "," ] && [ "$today_stats" != ",,,,,,,,,,," ]; then
+        stability=$(echo "$today_stats" | cut -d, -f5)
+    fi
+    local stab_fmt="N/A"
+    if [ -n "$stability" ] && [ "$stability" != "" ] && [ "$stability" != "NULL" ]; then
+        stab_fmt=$(printf "%.0f" "$stability" 2>/dev/null || echo "N/A")
+    fi
+    local comp_7d="N/A"
+    local comp_30d="N/A"
+    if [ -n "$stability_7d" ] && [ "$stability_7d" != "" ] && [ "$stability_7d" != "NULL" ]; then
+        comp_7d=$(printf "%.0f" "$stability_7d" 2>/dev/null || echo "N/A")
+    fi
+    if [ -n "$stability_30d" ] && [ "$stability_30d" != "" ] && [ "$stability_30d" != "NULL" ]; then
+        comp_30d=$(printf "%.0f" "$stability_30d" 2>/dev/null || echo "N/A")
+    fi
+    local comp_90d="N/A"
+    if [ -n "$stability_90d" ] && [ "$stability_90d" != "" ] && [ "$stability_90d" != "NULL" ]; then
+        comp_90d=$(printf "%.0f" "$stability_90d" 2>/dev/null || echo "N/A")
+    fi
+    eval $__result_var_connection_stability="'${stab_fmt} | 7d:${comp_7d} 30d:${comp_30d} 90d:${comp_90d}'"
+    
+    # 4. Quality Consistency (Standard deviation)
+    local q_cons=""
+    if [ -n "$today_stats" ] && [ "$today_stats" != "," ] && [ "$today_stats" != ",,,,,,,,,,," ]; then
+        q_cons=$(echo "$today_stats" | cut -d, -f6)
+    fi
+    local q_cons_fmt="N/A"
+    if [ -n "$q_cons" ] && [ "$q_cons" != "" ] && [ "$q_cons" != "NULL" ]; then
+        q_cons_fmt=$(printf "%.2f" "$q_cons" 2>/dev/null || echo "N/A")
+    fi
+    local comp_7d="N/A"
+    local comp_30d="N/A"
+        if [ -n "$q_cons_7d" ] && [ "$q_cons_7d" != "" ] && [ "$q_cons_7d" != "NULL" ]; then
+            comp_7d=$(printf "%.2f" "$q_cons_7d" 2>/dev/null || echo "N/A")
+        fi
+    if [ -n "$q_cons_30d" ] && [ "$q_cons_30d" != "" ] && [ "$q_cons_30d" != "NULL" ]; then
+        comp_30d=$(printf "%.2f" "$q_cons_30d" 2>/dev/null || echo "N/A")
+    fi
+    local comp_90d="N/A"
+    if [ -n "$q_cons_90d" ] && [ "$q_cons_90d" != "" ] && [ "$q_cons_90d" != "NULL" ]; then
+        comp_90d=$(printf "%.2f" "$q_cons_90d" 2>/dev/null || echo "N/A")
+    fi
+    eval $__result_var_quality_consistency="'${q_cons_fmt} | 7d:${comp_7d} 30d:${comp_30d} 90d:${comp_90d}'"
+        
+        # 5. Worst Hour (Hour with lowest quality)
+        if [ -n "$worst_h" ] && [ "$worst_h" != "" ] && [ "$worst_h" != "NULL" ]; then
+            local worst_h_fmt=$(printf "%02d:00" "$worst_h" 2>/dev/null || echo "N/A")
+            eval $__result_var_worst_hour="'${worst_h_fmt}'"
+        fi
+        
+        # 6. Active Hours (Hours with meaningful traffic)
+        local active=""
+        if [ -n "$today_stats" ] && [ "$today_stats" != "," ] && [ "$today_stats" != ",,,,,,,,,,," ]; then
+            active=$(echo "$today_stats" | cut -d, -f8)
+        fi
+    local active_fmt="N/A"
+    if [ -n "$active" ] && [ "$active" != "" ] && [ "$active" != "NULL" ]; then
+        local val=$(printf "%.0f" "$active" 2>/dev/null || echo "N/A")
+        if [ "$val" != "N/A" ]; then active_fmt="${val}h"; else active_fmt="N/A"; fi
+    fi
+    local comp_7d="N/A"
+    local comp_30d="N/A"
+        if [ -n "$active_7d" ] && [ "$active_7d" != "" ] && [ "$active_7d" != "NULL" ]; then
+            local val=$(printf "%.1f" "$active_7d" 2>/dev/null || echo "N/A")
+            if [ "$val" != "N/A" ]; then comp_7d="${val}h"; else comp_7d="N/A"; fi
+        fi
+    if [ -n "$active_30d" ] && [ "$active_30d" != "" ] && [ "$active_30d" != "NULL" ]; then
+        local val=$(printf "%.1f" "$active_30d" 2>/dev/null || echo "N/A")
+        if [ "$val" != "N/A" ]; then comp_30d="${val}h"; else comp_30d="N/A"; fi
+    fi
+    local comp_90d="N/A"
+    if [ -n "$active_90d" ] && [ "$active_90d" != "" ] && [ "$active_90d" != "NULL" ]; then
+        local val=$(printf "%.1f" "$active_90d" 2>/dev/null || echo "N/A")
+        if [ "$val" != "N/A" ]; then comp_90d="${val}h"; else comp_90d="N/A"; fi
+    fi
+    eval $__result_var_active_hours="'<code>${active_fmt}</code> | 7d:<code>${comp_7d}</code> 30d:<code>${comp_30d}</code> 90d:<code>${comp_90d}</code>'"
+    
+    # 7. Usage Consistency (Coefficient of variation)
+    local usage_var=""
+    if [ -n "$today_stats" ] && [ "$today_stats" != "," ] && [ "$today_stats" != ",,,,,,,,,,," ]; then
+        usage_var=$(echo "$today_stats" | cut -d, -f9)
+    fi
+    local usage_var_fmt="N/A"
+    if [ -n "$usage_var" ] && [ "$usage_var" != "" ] && [ "$usage_var" != "NULL" ]; then
+        usage_var_fmt=$(printf "%.4f" "$usage_var" 2>/dev/null || echo "N/A")
+    fi
+    local comp_7d="N/A"
+    local comp_30d="N/A"
+        if [ -n "$usage_var_7d" ] && [ "$usage_var_7d" != "" ] && [ "$usage_var_7d" != "NULL" ]; then
+            comp_7d=$(printf "%.4f" "$usage_var_7d" 2>/dev/null || echo "N/A")
+        fi
+    if [ -n "$usage_var_30d" ] && [ "$usage_var_30d" != "" ] && [ "$usage_var_30d" != "NULL" ]; then
+        comp_30d=$(printf "%.4f" "$usage_var_30d" 2>/dev/null || echo "N/A")
+    fi
+    local comp_90d="N/A"
+    if [ -n "$usage_var_90d" ] && [ "$usage_var_90d" != "" ] && [ "$usage_var_90d" != "NULL" ]; then
+        comp_90d=$(printf "%.4f" "$usage_var_90d" 2>/dev/null || echo "N/A")
+    fi
+    eval $__result_var_usage_consistency="'<code>${usage_var_fmt}</code> | 7d:<code>${comp_7d}</code> 30d:<code>${comp_30d}</code> 90d:<code>${comp_90d}</code>'"
+    
+    # 8. Peak vs Quiet (Peak/off-peak ratio)
+    local peak_ratio=""
+    if [ -n "$today_stats" ] && [ "$today_stats" != "," ] && [ "$today_stats" != ",,,,,,,,,,," ]; then
+        peak_ratio=$(echo "$today_stats" | cut -d, -f10)
+    fi
+    local peak_ratio_fmt="N/A"
+    if [ -n "$peak_ratio" ] && [ "$peak_ratio" != "" ] && [ "$peak_ratio" != "NULL" ]; then
+        local val=$(printf "%.2f" "$peak_ratio" 2>/dev/null || echo "N/A")
+        if [ "$val" != "N/A" ]; then peak_ratio_fmt="${val}x"; else peak_ratio_fmt="N/A"; fi
+    fi
+    local comp_7d="N/A"
+    local comp_30d="N/A"
+        if [ -n "$peak_ratio_7d" ] && [ "$peak_ratio_7d" != "" ] && [ "$peak_ratio_7d" != "NULL" ]; then
+            local val=$(printf "%.2f" "$peak_ratio_7d" 2>/dev/null || echo "N/A")
+            if [ "$val" != "N/A" ]; then comp_7d="${val}x"; else comp_7d="N/A"; fi
+        fi
+    if [ -n "$peak_ratio_30d" ] && [ "$peak_ratio_30d" != "" ] && [ "$peak_ratio_30d" != "NULL" ]; then
+        local val=$(printf "%.2f" "$peak_ratio_30d" 2>/dev/null || echo "N/A")
+        if [ "$val" != "N/A" ]; then comp_30d="${val}x"; else comp_30d="N/A"; fi
+    fi
+    local comp_90d="N/A"
+    if [ -n "$peak_ratio_90d" ] && [ "$peak_ratio_90d" != "" ] && [ "$peak_ratio_90d" != "NULL" ]; then
+        local val=$(printf "%.2f" "$peak_ratio_90d" 2>/dev/null || echo "N/A")
+        if [ "$val" != "N/A" ]; then comp_90d="${val}x"; else comp_90d="N/A"; fi
+    fi
+    eval $__result_var_peak_quiet="'<code>${peak_ratio_fmt}</code> | 7d:<code>${comp_7d}</code> 30d:<code>${comp_30d}</code> 90d:<code>${comp_90d}</code>'"
+    
+    # 9. Data Reliability (Connection reliability percentage)
+    local reliability=""
+    if [ -n "$today_stats" ] && [ "$today_stats" != "," ] && [ "$today_stats" != ",,,,,,,,,,," ]; then
+        reliability=$(echo "$today_stats" | cut -d, -f11)
+    fi
+    local rel_fmt="N/A"
+    if [ -n "$reliability" ] && [ "$reliability" != "" ] && [ "$reliability" != "NULL" ]; then
+        rel_fmt=$(printf "%.1f" "$reliability" 2>/dev/null || echo "N/A")
+    fi
+    local comp_7d="N/A"
+    local comp_30d="N/A"
+    if [ -n "$reliability_7d" ] && [ "$reliability_7d" != "" ] && [ "$reliability_7d" != "NULL" ]; then
+        comp_7d=$(printf "%.1f" "$reliability_7d" 2>/dev/null || echo "N/A")
+    fi
+    if [ -n "$reliability_30d" ] && [ "$reliability_30d" != "" ] && [ "$reliability_30d" != "NULL" ]; then
+        comp_30d=$(printf "%.1f" "$reliability_30d" 2>/dev/null || echo "N/A")
+    fi
+    # Format: add % only if value is not N/A
+    local rel_display="${rel_fmt}"
+    if [ "$rel_fmt" != "N/A" ]; then rel_display="${rel_fmt}%"; fi
+    local comp_7d_display="${comp_7d}"
+    if [ "$comp_7d" != "N/A" ]; then comp_7d_display="${comp_7d}%"; fi
+    local comp_30d_display="${comp_30d}"
+    if [ "$comp_30d" != "N/A" ]; then comp_30d_display="${comp_30d}%"; fi
+    local comp_90d="N/A"
+    if [ -n "$reliability_90d" ] && [ "$reliability_90d" != "" ] && [ "$reliability_90d" != "NULL" ]; then
+        comp_90d=$(printf "%.1f" "$reliability_90d" 2>/dev/null || echo "N/A")
+    fi
+    local comp_90d_display="${comp_90d}"
+    if [ "$comp_90d" != "N/A" ]; then comp_90d_display="${comp_90d}%"; fi
+    eval $__result_var_data_reliability="'${rel_display} | 7d:${comp_7d_display} 30d:${comp_30d_display} 90d:${comp_90d_display}'"
+    
+    # 10. Ping Consistency (Coefficient of variation)
+    local ping_cons=""
+    if [ -n "$today_stats" ] && [ "$today_stats" != "," ] && [ "$today_stats" != ",,,,,,,,,,," ]; then
+        ping_cons=$(echo "$today_stats" | cut -d, -f12)
+    fi
+    local ping_cons_fmt="N/A"
+    if [ -n "$ping_cons" ] && [ "$ping_cons" != "" ] && [ "$ping_cons" != "NULL" ]; then
+        ping_cons_fmt=$(printf "%.4f" "$ping_cons" 2>/dev/null || echo "N/A")
+    fi
+    local comp_7d="N/A"
+    local comp_30d="N/A"
+        if [ -n "$ping_cons_7d" ] && [ "$ping_cons_7d" != "" ] && [ "$ping_cons_7d" != "NULL" ]; then
+            comp_7d=$(printf "%.4f" "$ping_cons_7d" 2>/dev/null || echo "N/A")
+        fi
+    if [ -n "$ping_cons_30d" ] && [ "$ping_cons_30d" != "" ] && [ "$ping_cons_30d" != "NULL" ]; then
+        comp_30d=$(printf "%.4f" "$ping_cons_30d" 2>/dev/null || echo "N/A")
+    fi
+    local comp_90d="N/A"
+    if [ -n "$ping_cons_90d" ] && [ "$ping_cons_90d" != "" ] && [ "$ping_cons_90d" != "NULL" ]; then
+        comp_90d=$(printf "%.4f" "$ping_cons_90d" 2>/dev/null || echo "N/A")
+    fi
+    eval $__result_var_ping_consistency="'<code>${ping_cons_fmt}</code> | 7d:<code>${comp_7d}</code> 30d:<code>${comp_30d}</code> 90d:<code>${comp_90d}</code>'"
+    
+    # 11. Jitter Consistency (Coefficient of variation)
+    local jitter_cons=""
+    if [ -n "$today_stats" ] && [ "$today_stats" != "," ] && [ "$today_stats" != ",,,,,,,,,,," ]; then
+        jitter_cons=$(echo "$today_stats" | cut -d, -f13)
+    fi
+    local jitter_cons_fmt="N/A"
+    if [ -n "$jitter_cons" ] && [ "$jitter_cons" != "" ] && [ "$jitter_cons" != "NULL" ]; then
+        jitter_cons_fmt=$(printf "%.4f" "$jitter_cons" 2>/dev/null || echo "N/A")
+    fi
+    local comp_7d="N/A"
+    local comp_30d="N/A"
+        if [ -n "$jitter_cons_7d" ] && [ "$jitter_cons_7d" != "" ] && [ "$jitter_cons_7d" != "NULL" ]; then
+            comp_7d=$(printf "%.4f" "$jitter_cons_7d" 2>/dev/null || echo "N/A")
+        fi
+    if [ -n "$jitter_cons_30d" ] && [ "$jitter_cons_30d" != "" ] && [ "$jitter_cons_30d" != "NULL" ]; then
+        comp_30d=$(printf "%.4f" "$jitter_cons_30d" 2>/dev/null || echo "N/A")
+    fi
+    local comp_90d="N/A"
+    if [ -n "$jitter_cons_90d" ] && [ "$jitter_cons_90d" != "" ] && [ "$jitter_cons_90d" != "NULL" ]; then
+        comp_90d=$(printf "%.4f" "$jitter_cons_90d" 2>/dev/null || echo "N/A")
+    fi
+    eval $__result_var_jitter_consistency="'<code>${jitter_cons_fmt}</code> | 7d:<code>${comp_7d}</code> 30d:<code>${comp_30d}</code> 90d:<code>${comp_90d}</code>'"
 }
 
 # --- NEW: Function to analyze ConnMon trends from archive ---
@@ -1645,7 +3222,7 @@ analyze_connmon_trends() {
         if [ $(awk -v s="$stddev_formatted" 'BEGIN {if (s == 0.0) print 1; else print 0}') -eq 1 ]; then
             stability_output="<code>0.0%</code> (perfect consistency)"
         else
-            stability_output="<code>${stddev_formatted}%</code> variance"
+            stability_output="<code>${stddev_formatted}%</code> fluctuation"
         fi
     fi
     
@@ -1656,7 +3233,8 @@ analyze_connmon_trends() {
 
 # --- Main Logic Starts Here ---
 
-# Initialize DB first
+# Initialize DB first - CRITICAL: Must run before any data collection/archiving
+# This ensures all tables and columns exist, including 30-day trend columns
 init_archive_db
 
 # Sanitize text variables
@@ -1811,7 +3389,7 @@ get_previous_month_data_usage PREVIOUS_MONTH_USAGE
 get_current_bandwidth_speeds CURRENT_DOWNLOAD_SPEED CURRENT_UPLOAD_SPEED
 
 # Get device statistics
-get_device_statistics TOTAL_DEVICES_TODAY ACTIVE_DEVICES NEW_DEVICES_TODAY
+# get_device_statistics TOTAL_DEVICES_TODAY ACTIVE_DEVICES NEW_DEVICES_TODAY
 
 # Get peak usage times
 get_peak_usage_times PEAK_USAGE_HOUR PEAK_USAGE_DATA
@@ -1820,16 +3398,19 @@ get_peak_usage_times PEAK_USAGE_HOUR PEAK_USAGE_DATA
 calculate_network_health_score NETWORK_HEALTH_SCORE
 
 # --- NEW: Get device connection info from archive ---
-get_device_connection_info DEVICE_CONNECTION_INFO
+# get_device_connection_info DEVICE_CONNECTION_INFO
 
 # --- NEW: Get usage patterns from archive ---
 get_usage_patterns QUIET_HOURS BUSY_HOURS DAY_NIGHT_USAGE
 
 # --- NEW: Get most active device from archive ---
-get_most_active_device MOST_ACTIVE_DEVICE
+# get_most_active_device MOST_ACTIVE_DEVICE
 
 # --- NEW: Get advanced statistics from archive ---
-get_advanced_statistics AVG_SESSION_DURATION CONNECTION_STABILITY BANDWIDTH_EFFICIENCY
+get_advanced_statistics TRAFFIC_RATIO HOURLY_DATA_RATE PING_STATS JITTER_STATS NETWORK_LOAD
+
+# --- NEW: Get extended advanced statistics with 7-day comparisons ---
+get_extended_advanced_statistics QUALITY_BREAKDOWN SPEED_EFFICIENCY CONNECTION_STABILITY QUALITY_CONSISTENCY WORST_HOUR ACTIVE_HOURS USAGE_CONSISTENCY PEAK_QUIET DATA_RELIABILITY PING_CONSISTENCY JITTER_CONSISTENCY
 
 # --- NEW: Analyze ConnMon trends from archive ---
 analyze_connmon_trends CONNMON_QUALITY_TREND CONNMON_BEST_PERIOD CONNMON_STABILITY
@@ -2010,14 +3591,9 @@ function sendMessage()
     )
     # --- END DYNAMIC BANNER LOGIC ---
 
-    # --- Check if Historical ConnMon has any valid data ---
-    local has_historical_data=false
-    if (echo "$CONMON_WEEK_AVG" | grep -qv "N/A") || \
-       (echo "$CONMON_MONTH_AVG" | grep -qv "N/A") || \
-       (echo "$CONMON_YEAR_AVG" | grep -qv "N/A") || \
-       (echo "$CONMON_LIFETIME_AVG" | grep -qv "N/A"); then
-        has_historical_data=true
-    fi
+    # --- Always show Historical ConnMon section (even if data is N/A) ---
+    # This lets users know the feature exists and is collecting data
+    local has_historical_data=true
 
     # --- Format ConnMon Quality with emoji indicator ---
     local quality_emoji=""
@@ -2054,13 +3630,6 @@ $BANNER
 <b>📡 Bandwidth (Last Hour)</b>
  ┣ Download: <code>${CURRENT_DOWNLOAD_SPEED:-N/A}</code>
  ┗ Upload: <code>${CURRENT_UPLOAD_SPEED:-N/A}</code>
-
-<b>📱 Device Activity</b>
- ┣ Total Devices: <code>${TOTAL_DEVICES_TODAY:-N/A}</code>
- ┣ Active Devices: <code>${ACTIVE_DEVICES:-N/A}</code>
- ┗ New Devices: <code>${NEW_DEVICES_TODAY:-N/A}</code>
-
-$DEVICE_CONNECTION_INFO
 
 $TOP_USERS_TODAY_LIST
 
@@ -2130,16 +3699,28 @@ $TEXT
  ┣ This Year: <code>$YEARLY_USAGE_DECIMAL</code>
  ┗ Lifetime: <code>$LIFETIME_USAGE_DECIMAL</code>
 
-<b>📈 Usage Patterns</b>
+<b>📈 Usage Patterns (90-Day Trend)</b>
  ┣ Quiet Hours: ${QUIET_HOURS:-N/A}
  ┣ Busiest Hours: ${BUSY_HOURS:-N/A}
  ┗ Day vs Night: ${DAY_NIGHT_USAGE:-N/A}
 
 <b>📊 Advanced Statistics</b>
- ┣ Avg Session Duration: <code>${AVG_SESSION_DURATION:-N/A}</code>
- ┣ Most Active Device: ${MOST_ACTIVE_DEVICE:-N/A}
- ┣ Connection Stability: ${CONNECTION_STABILITY:-N/A}
- ┗ Bandwidth Efficiency: ${BANDWIDTH_EFFICIENCY:-N/A}
+ ┣ Traffic Ratio: ${TRAFFIC_RATIO:-N/A}
+ ┣ Avg Data/Hour: <code>${HOURLY_DATA_RATE:-N/A}</code>
+ ┣ Ping Stats: ${PING_STATS:-N/A}
+ ┣ Jitter Spikes: ${JITTER_STATS:-N/A}
+ ┣ Network Load: ${NETWORK_LOAD:-N/A}
+ ┣ Quality Breakdown: ${QUALITY_BREAKDOWN:-N/A}
+ ┣ Speed Efficiency: <code>${SPEED_EFFICIENCY:-N/A}</code>
+ ┣ Connection Stability: <code>${CONNECTION_STABILITY:-N/A}</code>
+ ┣ Quality Consistency: <code>${QUALITY_CONSISTENCY:-N/A}</code>
+ ┣ Worst Hour: <code>${WORST_HOUR:-N/A}</code>
+ ┣ Active Hours: <code>${ACTIVE_HOURS:-N/A}</code>
+ ┣ Usage Consistency: <code>${USAGE_CONSISTENCY:-N/A}</code>
+ ┣ Peak vs Quiet: <code>${PEAK_QUIET:-N/A}</code>
+ ┣ Data Reliability: <code>${DATA_RELIABILITY:-N/A}</code>
+ ┣ Ping Consistency: <code>${PING_CONSISTENCY:-N/A}</code>
+ ┗ Jitter Consistency: <code>${JITTER_CONSISTENCY:-N/A}</code>
 
 <b>👤 Top Device Usage</b>
 $TOP_USERS_MONTH_LIST
@@ -2163,9 +3744,10 @@ EOF
 )
 
     # Send the message silently
-    curl -s -X POST $API_TELEGRAM \
-        -d chat_id=$CHATID \
-        -d text="$TEXT" > /dev/null 2>&1
+    # Use --data-urlencode for text to properly handle special characters and HTML
+    curl -s -X POST "$API_TELEGRAM" \
+        --data-urlencode "chat_id=$CHATID" \
+        --data-urlencode "text=$TEXT" > /dev/null 2>&1
 }
 # --- END: FINAL sendMessage FUNCTION ---
 
