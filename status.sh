@@ -3,7 +3,7 @@ export PATH="/bin:/usr/bin:/sbin:/usr/sbin:/opt/bin:/opt/sbin"
 
 #
 # Dev: garett09
-# version: 9.0 (FINAL - Removed old Ping)
+# version: 8.6 (FINAL - Removed old Ping)
 # - Integrated Wicens DB archiving for reboots.
 # - Moved Wicens sections for clarity.
 # - Removed redundant Ping section (covered by ConnMon)
@@ -96,10 +96,10 @@ convert_usage() {
     local value=$1
     local unit=$2
     case $unit in
-        GiB) echo "$(awk "BEGIN {printf \"%.2f\", $value * 1.07374}") GB" ;;
-        MiB) echo "$(awk "BEGIN {printf \"%.2f\", $value * 1.04858}") MB" ;;
-        TiB) echo "$(awk "BEGIN {printf \"%.2f\", $value * 1.09951}") TB" ;;
-        PiB) echo "$(awk "BEGIN {printf \"%.2f\", $value * 1.12590}") PB" ;;
+        GiB) awk -v v="$value" 'BEGIN {printf "%.2f GB", v * 1.07374}' ;;
+        MiB) awk -v v="$value" 'BEGIN {printf "%.2f MB", v * 1.04858}' ;;
+        TiB) awk -v v="$value" 'BEGIN {printf "%.2f TB", v * 1.09951}' ;;
+        PiB) awk -v v="$value" 'BEGIN {printf "%.2f PB", v * 1.12590}' ;;
         *) echo "$value $unit" ;;
     esac
 }
@@ -107,7 +107,8 @@ convert_usage() {
 # Function to convert BYTES to human-readable format
 bytes_to_human() {
     local bytes=$1
-    if [ -z "$bytes" ] || [ "$bytes" -eq 0 ]; then
+    # Use awk to check if bytes is zero (handles decimal values)
+    if [ -z "$bytes" ] || [ "$(awk -v b="$bytes" 'BEGIN {if (b == 0 || b == "") print "1"; else print "0"}')" = "1" ]; then
         echo "0.00 KB"
         return
     fi
@@ -1194,16 +1195,15 @@ get_wicens_all_stats() {
     fi
     
     # --- 3. Format Connection Details Output ---
-    WAN_CONNECTION_DETAILS=$(cat <<EOF_DETAILS
-<b>🌐 WAN Connection Details (Wicens)</b>
- ┣ Current IP: $WIC_CURRENT_IP
- ┣ Uptime: $WIC_CURRENT_UPTIME
- ┣ Connected Since: $WIC_CURRENT_CONN_STR
- ┣ Previous IP: $WIC_OLD_IP_ADDR
- ┣ Previous IP Since: $WIC_OLD_IP_TIME_ACQUIRED
- ┗ Previous Lease: $WIC_OLD_IP_LEASE_DURATION
-EOF_DETAILS
-)
+    # Build string using printf for maximum compatibility
+    WAN_CONNECTION_DETAILS=$(printf '%s\n ┣ Current IP: %s\n ┣ Uptime: %s\n ┣ Connected Since: %s\n ┣ Previous IP: %s\n ┣ Previous IP Since: %s\n ┗ Previous Lease: %s' \
+        "<b>🌐 WAN Connection Details (Wicens)</b>" \
+        "$WIC_CURRENT_IP" \
+        "$WIC_CURRENT_UPTIME" \
+        "$WIC_CURRENT_CONN_STR" \
+        "$WIC_OLD_IP_ADDR" \
+        "$WIC_OLD_IP_TIME_ACQUIRED" \
+        "$WIC_OLD_IP_LEASE_DURATION")
 
     # --- 4. Get Disconnect Stats ---
     local WIC_TODAY_FILTER_GREP=$(date +"%b %d %Y")
@@ -1237,18 +1237,17 @@ EOF_DETAILS
     WIC_IP_CHANGES_LIFETIME=$(grep -c "WAN IP has changed" "$WICENS_LOG")
 
     # --- 5. Format Disconnect Stats Output (Clean List Format) ---
-    WAN_DISCONNECT_STATS=$(cat <<TABLE_EOF
-<b>🔄 WAN Disconnect Stats (Wicens)</b>
- ┣ Reboots Today ($WIC_LABEL_TODAY): $WIC_REBOOTS_TODAY
- ┣ Reboots Month ($WIC_LABEL_MONTH): $WIC_REBOOTS_MONTH
- ┣ Reboots Year ($WIC_LABEL_YEAR): $WIC_REBOOTS_YEAR
- ┣ Reboots Lifetime: $WIC_REBOOTS_LIFETIME
- ┣ IP Changes Today ($WIC_LABEL_TODAY): $WIC_IP_CHANGES_TODAY
- ┣ IP Changes Month ($WIC_LABEL_MONTH): $WIC_IP_CHANGES_MONTH
- ┣ IP Changes Year ($WIC_LABEL_YEAR): $WIC_IP_CHANGES_YEAR
- ┗ IP Changes Lifetime: $WIC_IP_CHANGES_LIFETIME
-TABLE_EOF
-)
+    # Build string using printf for maximum compatibility
+    WAN_DISCONNECT_STATS=$(printf '%s\n ┣ Reboots Today (%s): %s\n ┣ Reboots Month (%s): %s\n ┣ Reboots Year (%s): %s\n ┣ Reboots Lifetime: %s\n ┣ IP Changes Today (%s): %s\n ┣ IP Changes Month (%s): %s\n ┣ IP Changes Year (%s): %s\n ┗ IP Changes Lifetime: %s' \
+        "<b>🔄 WAN Disconnect Stats (Wicens)</b>" \
+        "$WIC_LABEL_TODAY" "$WIC_REBOOTS_TODAY" \
+        "$WIC_LABEL_MONTH" "$WIC_REBOOTS_MONTH" \
+        "$WIC_LABEL_YEAR" "$WIC_REBOOTS_YEAR" \
+        "$WIC_REBOOTS_LIFETIME" \
+        "$WIC_LABEL_TODAY" "$WIC_IP_CHANGES_TODAY" \
+        "$WIC_LABEL_MONTH" "$WIC_IP_CHANGES_MONTH" \
+        "$WIC_LABEL_YEAR" "$WIC_IP_CHANGES_YEAR" \
+        "$WIC_IP_CHANGES_LIFETIME")
 }
 # --- END NEW FUNCTION ---
 
@@ -1267,19 +1266,45 @@ calculate_percentage_change() {
     local current_num=$(echo "$current" | sed 's/[^0-9.]//g')
     local previous_num=$(echo "$previous" | sed 's/[^0-9.]//g')
     
-    if [ -z "$current_num" ] || [ -z "$previous_num" ] || [ "$previous_num" = "0" ] || [ "$previous_num" = "0.00" ]; then
+    if [ -z "$current_num" ] || [ -z "$previous_num" ]; then
+        eval $__result_var="'N/A'"
+        return
+    fi
+    
+    # Validate that we have valid numeric values (not empty, not zero, not too small)
+    # For human-readable formats like "14.17 GB", we need minimum meaningful baseline
+    # Reject if previous is zero or very small (less than 1 MB = 1048576 bytes)
+    # This prevents huge percentage changes from tiny baselines
+    local min_baseline=$(awk -v p="$previous_num" 'BEGIN {
+        # For GB units (values like 14.17), minimum baseline should be at least 0.01 GB (~10 MB)
+        # For MB units, minimum should be at least 0.1 MB
+        # Check if baseline is too small (less than 0.01 for GB scale)
+        if (p < 0.01) print "0"
+        else print "1"
+    }')
+    
+    if [ "$min_baseline" = "0" ] || [ "$previous_num" = "0" ] || [ "$previous_num" = "0.00" ]; then
         eval $__result_var="'N/A'"
         return
     fi
     
     # Calculate percentage change using awk for floating point
     local pct_change=$(awk -v c="$current_num" -v p="$previous_num" 'BEGIN {
-        if (p == 0) print "N/A"
+        if (p == 0 || p < 0.01) print "N/A"
         else {
             change = ((c - p) / p) * 100
+            # Cap extreme percentage changes at 999% to avoid display issues
+            if (change > 999) change = 999
+            if (change < -999) change = -999
             printf "%.1f", change
         }
     }')
+    
+    # Validate result
+    if [ -z "$pct_change" ] || [ "$pct_change" = "N/A" ]; then
+        eval $__result_var="'N/A'"
+        return
+    fi
     
     eval $__result_var="'$pct_change'"
 }
@@ -1287,16 +1312,59 @@ calculate_percentage_change() {
 # --- NEW: Function to get yesterday's data usage from archive DB ---
 get_yesterday_data_usage() {
     local __result_var=$1
-    local yesterday_date=$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d 2>/dev/null)
+    # Calculate yesterday's date using seconds since epoch (more compatible with router systems)
+    # This method works on BusyBox and most Unix systems
+    local now_seconds=$(date +%s 2>/dev/null)
+    if [ -z "$now_seconds" ] || [ "$now_seconds" = "" ]; then
+        # Fallback to date command variations if date +%s doesn't work
+        local yesterday_date=$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d 2>/dev/null)
+    else
+        # Subtract 86400 seconds (24 hours) and format as YYYY-MM-DD
+        # Use awk for arithmetic to be compatible with all shells (BusyBox, etc.)
+        local yesterday_seconds=$(awk -v n="$now_seconds" 'BEGIN {printf "%.0f", n - 86400}')
+        local yesterday_date=$(date -d "@$yesterday_seconds" +%Y-%m-%d 2>/dev/null || date -r "$yesterday_seconds" +%Y-%m-%d 2>/dev/null)
+        # Final fallback if both date formats fail
+        if [ -z "$yesterday_date" ] || [ "$yesterday_date" = "" ]; then
+            yesterday_date=$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d 2>/dev/null)
+        fi
+    fi
     
     if [ -z "$yesterday_date" ]; then
         eval $__result_var="'N/A'"
         return
     fi
     
-    local total_bytes=$(sqlite3 "$ARCHIVE_DB_FILE" "SELECT SUM(total_bytes) FROM daily_usage WHERE date = '$yesterday_date'" 2>/dev/null)
+    # Trim any whitespace from the date to ensure exact match with database
+    yesterday_date=$(echo "$yesterday_date" | sed 's/^[ \t]*//;s/[ \t]*$//')
     
+    if [ ! -f "$ARCHIVE_DB_FILE" ]; then
+        eval $__result_var="'N/A'"
+        return
+    fi
+    
+    # Use COALESCE to handle NULL results from SUM() when no rows exist
+    # This ensures we get 0 instead of NULL when there's no data
+    # Also trim any whitespace from the result
+    # Note: SQLite treats dates as TEXT in our schema, so exact string match is required
+    local total_bytes=$(sqlite3 "$ARCHIVE_DB_FILE" "SELECT COALESCE(SUM(total_bytes), 0) FROM daily_usage WHERE date = '$yesterday_date';" 2>/dev/null | sed 's/^[ \t]*//;s/[ \t]*$//' | head -n 1)
+    
+    # Debug: If query fails, try without semicolon (some SQLite versions)
     if [ -z "$total_bytes" ] || [ "$total_bytes" = "" ]; then
+        total_bytes=$(sqlite3 "$ARCHIVE_DB_FILE" "SELECT COALESCE(SUM(total_bytes), 0) FROM daily_usage WHERE date = '$yesterday_date'" 2>/dev/null | sed 's/^[ \t]*//;s/[ \t]*$//' | head -n 1)
+    fi
+    
+    # Check if result is NULL, empty, or 0
+    # SQLite COALESCE should return 0 if no rows, but handle edge cases
+    if [ -z "$total_bytes" ] || [ "$total_bytes" = "" ] || [ "$total_bytes" = "NULL" ]; then
+        eval $__result_var="'N/A'"
+        return
+    fi
+    
+    # Validate that it's a positive number (greater than 0)
+    # Convert to integer for comparison (handle decimal values)
+    # Use head -n 1 to take first line only in case of multiple results
+    local bytes_num=$(echo "$total_bytes" | head -n 1 | awk '{gsub(/^[ \t]+|[ \t]+$/, ""); printf "%.0f", $1 + 0}')
+    if [ -z "$bytes_num" ] || [ "$bytes_num" = "0" ] || [ "$bytes_num" = "" ]; then
         eval $__result_var="'N/A'"
         return
     fi
@@ -1309,22 +1377,32 @@ get_yesterday_data_usage() {
 # Note: vnstat data is always available from logfiles regardless of UI update frequency (5 min)
 get_previous_month_data_usage() {
     local __result_var=$1
-    local prev_month=$(date -d "last month" +%Y-%m 2>/dev/null || date -v-1m +%Y-%m 2>/dev/null)
+    # Get previous month in format that vnstat uses (e.g., "Nov 2025" or "2025-11")
+    local prev_month=$(date -d "last month" +"%b %Y" 2>/dev/null || date -v-1m +"%b %Y" 2>/dev/null)
     
     if [ -z "$prev_month" ]; then
         eval $__result_var="'N/A'"
         return
     fi
     
-    local usage=$(vnstat -i ppp0 -m --dbdir /opt/var/lib/vnstat | grep "$prev_month" | awk '{print $8, $9}' 2>/dev/null)
+    # Try to get vnstat monthly data and grep for previous month
+    # vnstat -m format: "Nov 2025  |     45.67 GiB  |     123.45 MiB  |     ..."
+    local usage=$(vnstat -i ppp0 -m --dbdir /opt/var/lib/vnstat 2>/dev/null | grep "$prev_month" | awk '{print $8, $9}' 2>/dev/null)
     
-    if [ -z "$usage" ]; then
+    if [ -z "$usage" ] || [ "$usage" = "" ]; then
         eval $__result_var="'N/A'"
         return
     fi
     
     local value=$(echo $usage | awk '{print $1}')
     local unit=$(echo $usage | awk '{print $2}')
+    
+    # Validate we got actual values
+    if [ -z "$value" ] || [ -z "$unit" ] || [ "$value" = "" ] || [ "$unit" = "" ]; then
+        eval $__result_var="'N/A'"
+        return
+    fi
+    
     local converted=$(convert_usage $value $unit)
     
     eval $__result_var="'$converted'"
@@ -1348,8 +1426,18 @@ format_trend_indicator() {
         return
     fi
     
+    # Handle near-zero changes (less than 0.1% absolute change) as neutral/no change
+    local abs_num=$(awk -v n="$num" 'BEGIN {if (n < 0) print -n; else print n}')
+    local is_near_zero=$(awk -v a="$abs_num" 'BEGIN {if (a < 0.1) print 1; else print 0}')
+    
+    if [ "$is_near_zero" = "1" ]; then
+        # Near-zero change - show neutral or no indicator
+        echo ""
+        return
+    fi
+    
     # Determine if change is positive or negative
-    local is_positive=$(awk -v n="$num" 'BEGIN {if (n > 0) print "1"; else print "0"}')
+    local is_positive=$(awk -v n="$num" 'BEGIN {if (n > 0) print 1; else print 0}')
     
     if [ "$is_reverse" = "true" ]; then
         # For reverse metrics (lower is better), flip the logic
@@ -2031,11 +2119,11 @@ calculate_bandwidth_efficiency() {
         local avg_bytes=$(echo "$bandwidth_data" | cut -d, -f2)
         
         # Validate and calculate efficiency percentage
-        # Use awk for floating point comparison
+        # Use awk for floating point comparison (avoid decimal comparison in [)
         local peak_check=$(awk -v p="$peak_bytes" 'BEGIN {if (p > 0) print 1; else print 0}')
         if [ -n "$peak_bytes" ] && [ "$peak_bytes" != "" ] && [ "$peak_bytes" != "NULL" ] && \
            [ -n "$avg_bytes" ] && [ "$avg_bytes" != "" ] && [ "$avg_bytes" != "NULL" ] && \
-           [ "$peak_bytes" != "0" ] && [ "$peak_check" = "1" ]; then
+           [ "$peak_check" = "1" ]; then
             efficiency=$(awk -v a="$avg_bytes" -v p="$peak_bytes" 'BEGIN {
                 if (p > 0) printf "%.2f", (a/p)*100
                 else print "NULL"
@@ -2210,11 +2298,11 @@ calculate_usage_variance() {
         local stddev=$(echo "$stats_data" | cut -d, -f2)
         
         # Calculate coefficient of variation (stddev/mean)
-        # Use awk for floating point comparison
+        # Use awk for floating point comparison (avoid decimal comparison in [)
         local mean_check=$(awk -v m="$mean" 'BEGIN {if (m > 0) print 1; else print 0}')
         if [ -n "$mean" ] && [ "$mean" != "" ] && [ "$mean" != "NULL" ] && \
            [ -n "$stddev" ] && [ "$stddev" != "" ] && [ "$stddev" != "NULL" ] && \
-           [ "$mean" != "0" ] && [ "$mean_check" = "1" ]; then
+           [ "$mean_check" = "1" ]; then
             variance=$(awk -v s="$stddev" -v m="$mean" 'BEGIN {
                 if (m > 0) printf "%.4f", s/m
                 else print "NULL"
@@ -2257,11 +2345,11 @@ calculate_peak_offpeak_ratio() {
         local quiet_avg=$(echo "$peak_data" | cut -d, -f2)
         
         # Calculate ratio (peak/quiet_avg)
-        # Use awk for floating point comparison
+        # Use awk for floating point comparison (avoid decimal comparison in [)
         local quiet_check=$(awk -v q="$quiet_avg" 'BEGIN {if (q > 0) print 1; else print 0}')
         if [ -n "$peak" ] && [ "$peak" != "" ] && [ "$peak" != "NULL" ] && \
            [ -n "$quiet_avg" ] && [ "$quiet_avg" != "" ] && [ "$quiet_avg" != "NULL" ] && \
-           [ "$quiet_avg" != "0" ] && [ "$quiet_check" = "1" ]; then
+           [ "$quiet_check" = "1" ]; then
             ratio=$(awk -v p="$peak" -v q="$quiet_avg" 'BEGIN {
                 if (q > 0) printf "%.2f", p/q
                 else print "NULL"
@@ -2307,11 +2395,11 @@ calculate_connection_reliability() {
         local total=$total_hours
         
         # Calculate percentage
-        # Use awk for floating point comparison
+        # Use awk for floating point comparison (avoid decimal comparison in [)
         local total_check=$(awk -v t="$total" 'BEGIN {if (t > 0) print 1; else print 0}')
         if [ -n "$valid" ] && [ "$valid" != "" ] && [ "$valid" != "NULL" ] && \
            [ -n "$total" ] && [ "$total" != "" ] && [ "$total" != "NULL" ] && \
-           [ "$total" != "0" ] && [ "$total_check" = "1" ]; then
+           [ "$total_check" = "1" ]; then
             reliability=$(awk -v v="$valid" -v t="$total" 'BEGIN {
                 if (t > 0) printf "%.2f", (v/t)*100
                 else print "NULL"
@@ -2353,11 +2441,11 @@ calculate_ping_consistency() {
         local stddev=$(echo "$ping_stats" | cut -d, -f2)
         
         # Calculate coefficient of variation
-        # Use awk for floating point comparison
+        # Use awk for floating point comparison (avoid decimal comparison in [)
         local mean_check=$(awk -v m="$mean" 'BEGIN {if (m > 0) print 1; else print 0}')
         if [ -n "$mean" ] && [ "$mean" != "" ] && [ "$mean" != "NULL" ] && \
            [ -n "$stddev" ] && [ "$stddev" != "" ] && [ "$stddev" != "NULL" ] && \
-           [ "$mean" != "0" ] && [ "$mean_check" = "1" ]; then
+           [ "$mean_check" = "1" ]; then
             consistency=$(awk -v s="$stddev" -v m="$mean" 'BEGIN {
                 if (m > 0) printf "%.4f", s/m
                 else print "NULL"
@@ -2399,11 +2487,11 @@ calculate_jitter_consistency() {
         local stddev=$(echo "$jitter_stats" | cut -d, -f2)
         
         # Calculate coefficient of variation
-        # Use awk for floating point comparison
+        # Use awk for floating point comparison (avoid decimal comparison in [)
         local mean_check=$(awk -v m="$mean" 'BEGIN {if (m > 0) print 1; else print 0}')
         if [ -n "$mean" ] && [ "$mean" != "" ] && [ "$mean" != "NULL" ] && \
            [ -n "$stddev" ] && [ "$stddev" != "" ] && [ "$stddev" != "NULL" ] && \
-           [ "$mean" != "0" ] && [ "$mean_check" = "1" ]; then
+           [ "$mean_check" = "1" ]; then
             consistency=$(awk -v s="$stddev" -v m="$mean" 'BEGIN {
                 if (m > 0) printf "%.4f", s/m
                 else print "NULL"
@@ -2479,9 +2567,9 @@ get_advanced_statistics() {
             }')
             
             # Only calculate ratio if we have meaningful traffic (at least 1KB)
-            # Use awk for floating point comparison
+            # Use awk for floating point comparison (avoid decimal comparison in [)
             local total_check=$(awk -v t="$total" 'BEGIN {if (t >= 1024) print 1; else print 0}')
-            if [ -n "$total" ] && [ "$total" != "" ] && [ "$total" != "0" ] && [ "$total_check" = "1" ]; then
+            if [ -n "$total" ] && [ "$total" != "" ] && [ "$total_check" = "1" ]; then
                 local rx_pct=$(awk -v r="$rx" -v tot="$total" 'BEGIN {
                     if (tot > 0) printf "%.0f", (r/tot)*100
                     else print 0
@@ -2636,9 +2724,12 @@ get_advanced_statistics() {
                 local max_bytes=$(echo "$load_stats" | cut -d, -f1)
                 local avg_bytes=$(echo "$load_stats" | cut -d, -f2)
                 
-                # Validate that we have meaningful data
-                if [ -n "$max_bytes" ] && [ "$max_bytes" != "0" ] && [ "$max_bytes" != "" ] && [ "$max_bytes" != "NULL" ] && \
-                   [ -n "$avg_bytes" ] && [ "$avg_bytes" != "" ] && [ "$avg_bytes" != "NULL" ]; then
+                # Validate that we have meaningful data (use awk to avoid decimal comparison issues)
+                max_avg_check=$(awk -v m="$max_bytes" -v a="$avg_bytes" 'BEGIN {
+                    if (m != "" && m != "NULL" && m > 0 && a != "" && a != "NULL" && a > 0) print "1"
+                    else print "0"
+                }')
+                if [ "$max_avg_check" = "1" ]; then
                     # Calculate load factor with division by zero protection
                     local load_factor=$(awk -v a="$avg_bytes" -v m="$max_bytes" 'BEGIN {
                         if (m > 0) printf "%.0f", (a/m)*100
@@ -3325,9 +3416,21 @@ CONMON_JITTER=$(echo "$CONMON_DATA" | cut -d, -f3)
 CONMON_QUALITY=$(echo "$CONMON_DATA" | cut -d, -f4)
 
 # --- NEW: Define Date Labels for ConnMon History ---
-LABEL_DATE_7DAY="($(date -d @$(($(date +%s) - 518400)) +"%b %d") - $(date +"%b %d"))"
-LABEL_DATE_MONTH="($(date +"%B"))"
-LABEL_DATE_YEAR="($(date +"%Y"))"
+# Calculate 7 days ago timestamp safely (avoid nested arithmetic expansion)
+TEMP_NOW_SECONDS=$(date +%s 2>/dev/null)
+if [ -n "$TEMP_NOW_SECONDS" ]; then
+    TEMP_7DAYS_AGO=$(awk -v n="$TEMP_NOW_SECONDS" 'BEGIN {printf "%.0f", n - 518400}')
+    TEMP_DATE_7DAYS=$(date -d "@$TEMP_7DAYS_AGO" +"%b %d" 2>/dev/null || date -r "$TEMP_7DAYS_AGO" +"%b %d" 2>/dev/null)
+    TEMP_DATE_TODAY=$(date +"%b %d")
+    LABEL_DATE_7DAY="($TEMP_DATE_7DAYS - $TEMP_DATE_TODAY)"
+else
+    TEMP_DATE_TODAY=$(date +"%b %d")
+    LABEL_DATE_7DAY="($TEMP_DATE_TODAY)"
+fi
+TEMP_DATE_MONTH=$(date +"%B")
+TEMP_DATE_YEAR=$(date +"%Y")
+LABEL_DATE_MONTH="($TEMP_DATE_MONTH)"
+LABEL_DATE_YEAR="($TEMP_DATE_YEAR)"
 
 # ConnMon Historical Data Retrieval
 get_connmon_history '-7 day' CONMON_WEEK_AVG
@@ -3425,16 +3528,31 @@ if [ -n "$DAILY_USAGE_DECIMAL" ] && [ "$DAILY_USAGE_DECIMAL" != "N/A" ] && [ -f 
         "SELECT AVG(total_bytes) FROM daily_usage 
          WHERE date < '$TODAY_DATE_SQL' AND date >= date('$TODAY_DATE_SQL', '-7 days')" 2>/dev/null)
     
-    if [ -n "$SEVEN_DAY_AVG_USAGE" ] && [ "$SEVEN_DAY_AVG_USAGE" != "" ] && [ "$SEVEN_DAY_AVG_USAGE" != "NULL" ] && [ "$SEVEN_DAY_AVG_USAGE" != "0" ]; then
+    # Validate 7-day average is meaningful (not NULL, not 0, not too small)
+    # Use awk to validate everything to avoid decimal comparison issues in [ command
+    seven_day_check=$(awk -v a="$SEVEN_DAY_AVG_USAGE" 'BEGIN {
+        if (a != "" && a != "NULL" && a > 52428800) print "1"  # At least ~50 MB baseline
+        else print "0"
+    }')
+    
+    # Only check awk validation result (avoid any [ comparisons with decimal values)
+    if [ "$seven_day_check" = "1" ]; then
         # Convert to human readable for comparison
         SEVEN_DAY_AVG_HUMAN=$(bytes_to_human $SEVEN_DAY_AVG_USAGE)
         # Use the human-readable format directly for comparison
         calculate_percentage_change "$DAILY_USAGE_DECIMAL" "$SEVEN_DAY_AVG_HUMAN" DAILY_USAGE_TREND_PCT
         DAILY_USAGE_TREND=$(format_trend_indicator "$DAILY_USAGE_TREND_PCT" "false")
     elif [ -n "$YESTERDAY_USAGE" ] && [ "$YESTERDAY_USAGE" != "N/A" ]; then
-        # Fallback to yesterday
-        calculate_percentage_change "$DAILY_USAGE_DECIMAL" "$YESTERDAY_USAGE" DAILY_USAGE_TREND_PCT
-        DAILY_USAGE_TREND=$(format_trend_indicator "$DAILY_USAGE_TREND_PCT" "false")
+        # Fallback to yesterday - validate yesterday has meaningful data
+        yesterday_num=$(echo "$YESTERDAY_USAGE" | sed 's/[^0-9.]//g')
+        yesterday_check=$(awk -v y="$yesterday_num" 'BEGIN {
+            if (y != "" && y > 0.01) print "1"  # At least 0.01 GB baseline
+            else print "0"
+        }')
+        if [ "$yesterday_check" = "1" ]; then
+            calculate_percentage_change "$DAILY_USAGE_DECIMAL" "$YESTERDAY_USAGE" DAILY_USAGE_TREND_PCT
+            DAILY_USAGE_TREND=$(format_trend_indicator "$DAILY_USAGE_TREND_PCT" "false")
+        fi
     fi
 fi
 
@@ -3446,7 +3564,15 @@ if [ -n "$MONTHLY_USAGE_DECIMAL" ] && [ "$MONTHLY_USAGE_DECIMAL" != "N/A" ] && [
         "SELECT AVG(total_bytes) FROM daily_usage 
          WHERE date < '$TODAY_DATE_SQL' AND date >= date('$TODAY_DATE_SQL', '-30 days')" 2>/dev/null)
     
-    if [ -n "$THIRTY_DAY_AVG_USAGE" ] && [ "$THIRTY_DAY_AVG_USAGE" != "" ] && [ "$THIRTY_DAY_AVG_USAGE" != "NULL" ] && [ "$THIRTY_DAY_AVG_USAGE" != "0" ]; then
+    # Validate 30-day average is meaningful (not NULL, not 0, not too small)
+    # Use awk to validate everything to avoid decimal comparison issues in [ command
+    thirty_day_check=$(awk -v a="$THIRTY_DAY_AVG_USAGE" 'BEGIN {
+        if (a != "" && a != "NULL" && a > 52428800) print "1"  # At least ~50 MB daily baseline
+        else print "0"
+    }')
+    
+    # Only check awk validation result (avoid any [ comparisons with decimal values)
+    if [ "$thirty_day_check" = "1" ]; then
         # Calculate monthly average (multiply daily average by ~30)
         THIRTY_DAY_MONTHLY_EST=$(awk -v d="$THIRTY_DAY_AVG_USAGE" 'BEGIN {printf "%.0f", d * 30}')
         THIRTY_DAY_MONTHLY_HUMAN=$(bytes_to_human $THIRTY_DAY_MONTHLY_EST)
@@ -3455,9 +3581,16 @@ if [ -n "$MONTHLY_USAGE_DECIMAL" ] && [ "$MONTHLY_USAGE_DECIMAL" != "N/A" ] && [
         calculate_percentage_change "$MONTHLY_USAGE_DECIMAL" "$THIRTY_DAY_MONTHLY_HUMAN" MONTHLY_USAGE_TREND_PCT
         MONTHLY_USAGE_TREND=$(format_trend_indicator "$MONTHLY_USAGE_TREND_PCT" "false")
     elif [ -n "$PREVIOUS_MONTH_USAGE" ] && [ "$PREVIOUS_MONTH_USAGE" != "N/A" ]; then
-        # Fallback to previous month
-        calculate_percentage_change "$MONTHLY_USAGE_DECIMAL" "$PREVIOUS_MONTH_USAGE" MONTHLY_USAGE_TREND_PCT
-        MONTHLY_USAGE_TREND=$(format_trend_indicator "$MONTHLY_USAGE_TREND_PCT" "false")
+        # Fallback to previous month - validate previous month has meaningful data
+        prev_month_num=$(echo "$PREVIOUS_MONTH_USAGE" | sed 's/[^0-9.]//g')
+        prev_month_check=$(awk -v p="$prev_month_num" 'BEGIN {
+            if (p != "" && p > 0.1) print "1"  # At least 0.1 GB baseline
+            else print "0"
+        }')
+        if [ "$prev_month_check" = "1" ]; then
+            calculate_percentage_change "$MONTHLY_USAGE_DECIMAL" "$PREVIOUS_MONTH_USAGE" MONTHLY_USAGE_TREND_PCT
+            MONTHLY_USAGE_TREND=$(format_trend_indicator "$MONTHLY_USAGE_TREND_PCT" "false")
+        fi
     fi
 fi
 
@@ -3606,11 +3739,14 @@ function sendMessage()
                 else if (q >= 85) print "yellow"
                 else print "red"
             }')
-            case "$quality_check" in
-                green) quality_emoji="🟢" ;;
-                yellow) quality_emoji="🟡" ;;
-                red) quality_emoji="🔴" ;;
-            esac
+            # Use if-elif instead of case for better compatibility with /bin/sh
+            if [ "$quality_check" = "green" ]; then
+                quality_emoji="🟢"
+            elif [ "$quality_check" = "yellow" ]; then
+                quality_emoji="🟡"
+            elif [ "$quality_check" = "red" ]; then
+                quality_emoji="🔴"
+            fi
         fi
     fi
 
